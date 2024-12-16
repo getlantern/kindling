@@ -38,7 +38,7 @@ func NewMaestro(options ...Option) Maestro {
 
 // Dial implements the Maestro interface.
 func (m *maestro) Dial(network, address string) (net.Conn, error) {
-	return nil, nil
+	return m.DialContext(context.Background(), network, address)
 }
 
 // DialContext implements the Maestro interface.
