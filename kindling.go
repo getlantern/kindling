@@ -1,13 +1,13 @@
-package maestro
+package kindling
 
 import (
 	"context"
 	"net"
 )
 
-// Maestro is the interface that wraps the basic Dial and DialContext methods for control
+// Kindling is the interface that wraps the basic Dial and DialContext methods for control
 // plane traffic.
-type Maestro interface {
+type Kindling interface {
 
 	// Dial connects to the address on the named network.
 	Dial(network, address string) (net.Conn, error)
@@ -16,18 +16,18 @@ type Maestro interface {
 	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 }
 
-type maestro struct {
+type kindling struct {
 }
 
-// Make sure that maestro implements the Maestro interface.
-var _ Maestro = &maestro{}
+// Make sure that kindling implements the Kindling interface.
+var _ Kindling = &kindling{}
 
 // Option is a functional option type that allows us to configure the Client.
-type Option func(Maestro)
+type Option func(Kindling)
 
-// NewMaestro returns a new Maestro.
-func NewMaestro(options ...Option) Maestro {
-	m := &maestro{}
+// NewKindling returns a new Kindling.
+func NewKindling(options ...Option) Kindling {
+	m := &kindling{}
 	// Apply all the functional options to configure the client.
 	for _, opt := range options {
 		opt(m)
@@ -36,34 +36,34 @@ func NewMaestro(options ...Option) Maestro {
 	return m
 }
 
-// Dial implements the Maestro interface.
-func (m *maestro) Dial(network, address string) (net.Conn, error) {
+// Dial implements the Kindling interface.
+func (m *kindling) Dial(network, address string) (net.Conn, error) {
 	return m.DialContext(context.Background(), network, address)
 }
 
-// DialContext implements the Maestro interface.
-func (m *maestro) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+// DialContext implements the Kindling interface.
+func (m *kindling) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	return nil, nil
 }
 
-// WithDomainFronting is a functional option that enables domain fronting for the Maestro.
+// WithDomainFronting is a functional option that enables domain fronting for the Kindling.
 func WithDomainFronting() Option {
-	return func(m Maestro) {
+	return func(m Kindling) {
 
 	}
 }
 
-// WithDoHTunnel is a functional option that enables DNS over HTTPS (DoH) tunneling for the Maestro.
+// WithDoHTunnel is a functional option that enables DNS over HTTPS (DoH) tunneling for the Kindling.
 func WithDoHTunnel() Option {
-	return func(m Maestro) {
+	return func(m Kindling) {
 
 	}
 }
 
-// WithProxyless is a functional option that enables proxyless mode for the Maestro such that
+// WithProxyless is a functional option that enables proxyless mode for the Kindling such that
 // it accesses the control plane directly using a variety of proxyless techniques.
 func WithProxyless(domain string) Option {
-	return func(m Maestro) {
+	return func(m Kindling) {
 
 	}
 }
