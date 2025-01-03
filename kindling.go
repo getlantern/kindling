@@ -46,20 +46,42 @@ func NewKindling(options ...Option) Kindling {
 }
 
 // NewHTTPClient implements the Kindling interface.
-func (m *kindling) NewHTTPClient() *http.Client {
+func (k *kindling) NewHTTPClient() *http.Client {
 	// Create a specialized HTTP transport that concurrently races between fronted and smart dialer.
 	// All options are tried in parallel and the first one to succeed is used.
 	// If all options fail, the last error is returned.
 	return &http.Client{
-		Transport: newRaceTransport(m.fronted, m.smartDialer),
+		Transport: k.newRaceTransport(),
 	}
 }
 
-func newRaceTransport(fronted fronted.Fronted, smartDialer transport.StreamDialer) http.RoundTripper {
+// WithDomainFronting is a functional option that enables domain fronting for the Kindling.
+func WithDomainFronting(pool *x509.CertPool, providers map[string]*fronted.Provider) Option {
+	return func(k *kindling) {
+		k.fronted = newFronted(pool, providers)
+	}
+}
+
+// WithDoHTunnel is a functional option that enables DNS over HTTPS (DoH) tunneling for the Kindling.
+func WithDoHTunnel() Option {
+	return func(k *kindling) {
+
+	}
+}
+
+// WithProxyless is a functional option that enables proxyless mode for the Kindling such that
+// it accesses the control plane directly using a variety of proxyless techniques.
+func WithProxyless(domains ...string) Option {
+	return func(k *kindling) {
+		k.smartDialer = newSmartDialer(domains...)
+	}
+}
+
+func (k *kindling) newRaceTransport() http.RoundTripper {
 	// First, create a RoundTripper from the smart dialer.
 	smartTransport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			streamConn, err := smartDialer.DialStream(ctx, addr)
+			streamConn, err := k.smartDialer.DialStream(ctx, addr)
 			if err != nil {
 				return nil, err
 			}
@@ -71,33 +93,8 @@ func newRaceTransport(fronted fronted.Fronted, smartDialer transport.StreamDiale
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
-	// Now create a RoundTripper that races between the fronted and smart dialer.
-	return &raceTransport{
-		fronted:        fronted,
-		smartTransport: smartTransport,
-	}
-}
-
-// WithDomainFronting is a functional option that enables domain fronting for the Kindling.
-func WithDomainFronting(pool *x509.CertPool, providers map[string]*fronted.Provider) Option {
-	return func(m *kindling) {
-		m.fronted = newFronted(pool, providers)
-	}
-}
-
-// WithDoHTunnel is a functional option that enables DNS over HTTPS (DoH) tunneling for the Kindling.
-func WithDoHTunnel() Option {
-	return func(m *kindling) {
-
-	}
-}
-
-// WithProxyless is a functional option that enables proxyless mode for the Kindling such that
-// it accesses the control plane directly using a variety of proxyless techniques.
-func WithProxyless(domains ...string) Option {
-	return func(m *kindling) {
-		m.smartDialer = newSmartDialer(domains...)
-	}
+	// Now create a RoundTripper that races between the available options.
+	return newRaceTransport(k.fronted, smartTransport)
 }
 
 func newFronted(pool *x509.CertPool, providers map[string]*fronted.Provider) fronted.Fronted {
