@@ -3,7 +3,7 @@ Library using a series of techniques to send and receive small amounts of data t
 
 ## Example
 
-```
+```go
 	kindling := kindling.NewKindling(
 		kindling.WithDomainFronting(nil, nil),
 		kindling.WithProxyless("example.com"),
