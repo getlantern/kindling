@@ -23,8 +23,8 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	ctx, cancel := context.WithTimeout(req.Context(), 1*time.Minute)
 	defer cancel()
 	var httpErrors atomic.Int64
-	var respCh = make(chan *http.Response, 1)
-	var errCh = make(chan error, 1)
+	var respCh = make(chan *http.Response, len(t.roundTrippers))
+	var errCh = make(chan error, len(t.roundTrippers))
 	for _, rt := range t.roundTrippers {
 		go func(rt http.RoundTripper, r *http.Request) {
 			resp, err := rt.RoundTrip(r)
