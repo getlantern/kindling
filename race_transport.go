@@ -23,8 +23,9 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	ctx, cancel := context.WithTimeout(req.Context(), 1*time.Minute)
 	defer cancel()
 	var httpErrors atomic.Int64
-	var respCh = make(chan *http.Response, len(t.roundTrippers))
-	var errCh = make(chan error, len(t.roundTrippers))
+	var responses atomic.Int64
+	var respCh = make(chan *http.Response)
+	var errCh = make(chan error)
 	for _, rt := range t.roundTrippers {
 		go func(rt http.RoundTripper, r *http.Request) {
 			resp, err := rt.RoundTrip(r)
@@ -33,12 +34,18 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 					errCh <- err
 				}
 			} else {
-				respCh <- resp
+				if responses.Add(1) == 1 {
+					respCh <- resp
+				} else {
+					_ = resp.Body.Close()
+				}
 			}
 		}(rt, req.Clone(ctx))
 	}
 	select {
 	case resp := <-respCh:
+		// If we get a response, we can cancel the other requests.
+		cancel()
 		return resp, nil
 	case err := <-errCh:
 		return nil, err
