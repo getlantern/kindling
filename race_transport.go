@@ -21,6 +21,9 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Try all RoundTrippers in parallel and return the first successful response.
 	// If all fail, return the last error.
 	ctx, cancel := context.WithTimeout(req.Context(), 1*time.Minute)
+
+	// Note that this will cancel the context when the first response is received,
+	// canceling any other in-flight requests that respect the context (which they should).
 	defer cancel()
 	var httpErrors atomic.Int64
 	var responses atomic.Int64
