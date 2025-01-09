@@ -3,6 +3,7 @@ package kindling
 import (
 	"context"
 	"crypto/x509"
+	"embed"
 	"log/slog"
 	"net"
 	"net/http"
@@ -112,6 +113,9 @@ func newSmartRoundTripper(domains ...string) http.RoundTripper {
 	}
 }
 
+//go:embed smart_dialer_config.json
+var embedFS embed.FS
+
 func newSmartDialer(domains ...string) transport.StreamDialer {
 	finder := &smart.StrategyFinder{
 		TestTimeout:  5 * time.Second,
@@ -120,21 +124,10 @@ func newSmartDialer(domains ...string) transport.StreamDialer {
 		PacketDialer: &transport.UDPDialer{},
 	}
 
-	configBytes := []byte(`
-	{
-	  "dns": [
-		  {"system": {}},
-		  {"https": {"name": "8.8.8.8"}},
-		  {"https": {"name": "9.9.9.9"}}
-	  ],
-	  "tls": [
-		  "",
-		  "split:2",
-		  "tlsfrag:1"
-	  ]
+	configBytes, err := embedFS.ReadFile("smart_dialer_config.json")
+	if err != nil {
+		slog.Error("Failed to read smart dialer config", "error", err)
 	}
-	`)
-
 	dialer, err := finder.NewDialer(context.Background(), domains, configBytes)
 	if err != nil {
 		slog.Error("Failed to create smart dialer", "error", err)
