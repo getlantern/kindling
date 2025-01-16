@@ -4,7 +4,7 @@ go 1.22.4
 
 require (
 	github.com/Jigsaw-Code/outline-sdk v0.0.18-0.20241106233708-faffebb12629
-	github.com/Jigsaw-Code/outline-sdk/x v0.0.0-20250110201030-80a3f247a159
+	github.com/Jigsaw-Code/outline-sdk/x v0.0.0-20250113162209-efa808309e1e
 	github.com/getlantern/fronted v0.0.0-20250116185732-4ed3a2adcfbd
 )
 
