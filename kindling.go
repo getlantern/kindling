@@ -2,13 +2,12 @@ package kindling
 
 import (
 	"context"
-	"crypto/x509"
 	"embed"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/Jigsaw-Code/outline-sdk/transport"
@@ -36,13 +35,13 @@ type Option func(*kindling)
 
 // NewKindling returns a new Kindling.
 func NewKindling(options ...Option) Kindling {
-	m := &kindling{}
+	k := &kindling{}
 	// Apply all the functional options to configure the client.
 	for _, opt := range options {
-		opt(m)
+		opt(k)
 	}
 
-	return m
+	return k
 }
 
 // NewHTTPClient implements the Kindling interface.
@@ -56,9 +55,9 @@ func (k *kindling) NewHTTPClient() *http.Client {
 }
 
 // WithDomainFronting is a functional option that enables domain fronting for the Kindling.
-func WithDomainFronting(pool *x509.CertPool, providers map[string]*fronted.Provider) Option {
+func WithDomainFronting(configURL, countryCode string) Option {
 	return func(k *kindling) {
-		k.roundTrippers = append(k.roundTrippers, newFronted(pool, providers))
+		k.roundTrippers = append(k.roundTrippers, newFronted(configURL, countryCode))
 	}
 }
 
@@ -82,16 +81,27 @@ func (k *kindling) newRaceTransport() http.RoundTripper {
 	return newRaceTransport(k.roundTrippers...)
 }
 
-func newFronted(pool *x509.CertPool, providers map[string]*fronted.Provider) fronted.Fronted {
-	var cacheFile string
-	dir, err := os.UserConfigDir()
+func newFronted(configURL, countryCode string) fronted.Fronted {
+	// Parse the domain from the URL.
+	u, err := url.Parse(configURL)
 	if err != nil {
-		slog.Error("Unable to get user config dir: %w", err)
-	} else {
-		cacheFile = filepath.Join(dir, "fronted", "fronted_cache.json")
+		slog.Error("Failed to parse URL", "error", err)
+		return nil
 	}
-	f := fronted.NewFronted(cacheFile)
-	f.OnNewFronts(pool, providers)
+	// Extract the domain from the URL.
+	domain := u.Host
+
+	// First, download the file from the specified URL using the smart dialer.
+	// Then, create a new fronted instance with the downloaded file.
+	httpClient := &http.Client{
+		Transport: newSmartRoundTripper(domain),
+	}
+
+	f := fronted.NewFronted(
+		fronted.WithHTTPClient(httpClient),
+		fronted.WithConfigURL(configURL),
+		fronted.WithCountryCode(countryCode),
+	)
 	return f
 }
 
@@ -113,7 +123,7 @@ func newSmartRoundTripper(domains ...string) http.RoundTripper {
 	}
 }
 
-//go:embed smart_dialer_config.json
+//go:embed smart_dialer_config.yml
 var embedFS embed.FS
 
 func newSmartDialer(domains ...string) transport.StreamDialer {
@@ -124,7 +134,7 @@ func newSmartDialer(domains ...string) transport.StreamDialer {
 		PacketDialer: &transport.UDPDialer{},
 	}
 
-	configBytes, err := embedFS.ReadFile("smart_dialer_config.json")
+	configBytes, err := embedFS.ReadFile("smart_dialer_config.yml")
 	if err != nil {
 		slog.Error("Failed to read smart dialer config", "error", err)
 	}

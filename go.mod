@@ -4,8 +4,24 @@ go 1.22.4
 
 require (
 	github.com/Jigsaw-Code/outline-sdk v0.0.18-0.20241106233708-faffebb12629
-	github.com/Jigsaw-Code/outline-sdk/x v0.0.0-20241220203015-6e3e4111c519
-	github.com/getlantern/fronted v0.0.0-20250104035820-b06365fddbbf
+	github.com/Jigsaw-Code/outline-sdk/x v0.0.0-20250110201030-80a3f247a159
+	github.com/getlantern/fronted v0.0.0-20250116185732-4ed3a2adcfbd
+)
+
+require (
+	github.com/dsnet/compress v0.0.2-0.20210315054119-f66993602bf5 // indirect
+	github.com/getlantern/keepcurrent v0.0.0-20240126172110-2e0264ca385d // indirect
+	github.com/golang/snappy v0.0.4 // indirect
+	github.com/google/go-cmp v0.6.0 // indirect
+	github.com/klauspost/pgzip v1.2.5 // indirect
+	github.com/mholt/archiver/v3 v3.5.1 // indirect
+	github.com/niemeyer/pretty v0.0.0-20200227124842-a10e7caefd8e // indirect
+	github.com/nwaples/rardecode v1.1.0 // indirect
+	github.com/pierrec/lz4/v4 v4.1.15 // indirect
+	github.com/ulikunitz/xz v0.5.10 // indirect
+	github.com/xi2/xz v0.0.0-20171230120015-48954b6210f8 // indirect
+	gopkg.in/check.v1 v1.0.0-20200227125254-8fa46927fb4f // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 require (
@@ -29,6 +45,7 @@ require (
 	github.com/go-logr/logr v1.4.1 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-stack/stack v1.8.1 // indirect
+	github.com/goccy/go-yaml v1.15.13 // indirect
 	github.com/klauspost/compress v1.17.4 // indirect
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c // indirect
 	github.com/refraction-networking/utls v1.6.7 // indirect
@@ -40,5 +57,5 @@ require (
 	go.uber.org/zap v1.26.0 // indirect
 	golang.org/x/crypto v0.28.0 // indirect
 	golang.org/x/net v0.28.0 // indirect
-	golang.org/x/sys v0.26.0 // indirect
+	golang.org/x/sys v0.27.0 // indirect
 )
