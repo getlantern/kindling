@@ -1,0 +1,16 @@
+dns:
+  - system: {}
+  - https:
+      name: cloudflare-dns.com.
+      address: cloudflare.net.
+  - https:
+      name: doh.dns.sb
+      address: cloudflare.net:443
+  - https:
+      name: 223.5.5.5
+tls:
+  - "" # Direct dialer
+  - split:1 # TCP stream split at position 1
+  - split:2,20*5 # TCP stream split at position 2, followed by 20 blocks of length 5.
+  - split:200|disorder:1 # TCP stream split at position 1, and send the second packet (packet #1) with zero TTL at first.
+  - tlsfrag:1 # TLS Record Fragmentation at position 1

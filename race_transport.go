@@ -2,6 +2,7 @@ package kindling
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -32,6 +33,9 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	for _, rt := range t.roundTrippers {
 		go func(rt http.RoundTripper, r *http.Request) {
 			resp, err := rt.RoundTrip(r)
+			if resp != nil {
+				fmt.Printf("Response: %s", resp.Header)
+			}
 			if err != nil {
 				if httpErrors.Add(1) == int64(len(t.roundTrippers)) {
 					errCh <- err
