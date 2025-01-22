@@ -23,8 +23,10 @@ type Kindling interface {
 	NewHTTPClient() *http.Client
 }
 
+type httpDialer func(ctx context.Context, addr string) (http.RoundTripper, error)
+
 type kindling struct {
-	roundTrippers []http.RoundTripper
+	httpDialers []httpDialer
 }
 
 // Make sure that kindling implements the Kindling interface.
@@ -57,7 +59,7 @@ func (k *kindling) NewHTTPClient() *http.Client {
 // WithDomainFronting is a functional option that enables domain fronting for the Kindling.
 func WithDomainFronting(configURL, countryCode string) Option {
 	return func(k *kindling) {
-		k.roundTrippers = append(k.roundTrippers, newFronted(configURL, countryCode))
+		k.httpDialers = append(k.httpDialers, newFrontedDialer(configURL, countryCode))
 	}
 }
 
@@ -72,16 +74,16 @@ func WithDoHTunnel() Option {
 // it accesses the control plane directly using a variety of proxyless techniques.
 func WithProxyless(domains ...string) Option {
 	return func(k *kindling) {
-		k.roundTrippers = append(k.roundTrippers, newSmartRoundTripper(domains...))
+		k.httpDialers = append(k.httpDialers, newSmartHTTPDialer(domains...))
 	}
 }
 
 func (k *kindling) newRaceTransport() http.RoundTripper {
 	// Now create a RoundTripper that races between the available options.
-	return newRaceTransport(k.roundTrippers...)
+	return newRaceTransport(k.httpDialers...)
 }
 
-func newFronted(configURL, countryCode string) fronted.Fronted {
+func newFrontedDialer(configURL, countryCode string) httpDialer {
 	// Parse the domain from the URL.
 	u, err := url.Parse(configURL)
 	if err != nil {
@@ -94,32 +96,47 @@ func newFronted(configURL, countryCode string) fronted.Fronted {
 	// First, download the file from the specified URL using the smart dialer.
 	// Then, create a new fronted instance with the downloaded file.
 	httpClient := &http.Client{
-		Transport: newSmartRoundTripper(domain),
+		Transport: newSmartHTTPTransport(domain),
 	}
-
-	f := fronted.NewFronted(
+	fr := fronted.NewFronted(
 		fronted.WithHTTPClient(httpClient),
 		fronted.WithConfigURL(configURL),
 		fronted.WithCountryCode(countryCode),
 	)
-	return f
+	return fr.NewConnectedRoundTripper
 }
 
-func newSmartRoundTripper(domains ...string) http.RoundTripper {
+func newSmartHTTPDialer(domains ...string) httpDialer {
 	d := newSmartDialer(domains...)
-	return &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			streamConn, err := d.DialStream(ctx, addr)
-			if err != nil {
-				return nil, err
-			}
+	return func(ctx context.Context, addr string) (http.RoundTripper, error) {
+		streamConn, err := d.DialStream(ctx, addr)
+		if err != nil {
+			return nil, err
+		}
+		return newTransportWithDialContect(func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return streamConn, nil
-		},
+		}), nil
+	}
+}
+
+func newSmartHTTPTransport(domains ...string) *http.Transport {
+	d := newSmartDialer(domains...)
+	return newTransportWithDialContect(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		streamConn, err := d.DialStream(ctx, addr)
+		if err != nil {
+			return nil, err
+		}
+		return streamConn, nil
+	})
+}
+func newTransportWithDialContect(dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
+	return &http.Transport{
+		DialContext:           dialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+		TLSHandshakeTimeout:   20 * time.Second,
+		ExpectContinueTimeout: 4 * time.Second,
 	}
 }
 
