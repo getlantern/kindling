@@ -3,6 +3,7 @@ package kindling
 import (
 	"context"
 	"embed"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -59,7 +60,12 @@ func (k *kindling) NewHTTPClient() *http.Client {
 // WithDomainFronting is a functional option that enables domain fronting for the Kindling.
 func WithDomainFronting(configURL, countryCode string) Option {
 	return func(k *kindling) {
-		k.httpDialers = append(k.httpDialers, newFrontedDialer(configURL, countryCode))
+		frontedDialer, err := newFrontedDialer(configURL, countryCode)
+		if err != nil {
+			slog.Error("Failed to create fronted dialer", "error", err)
+			return
+		}
+		k.httpDialers = append(k.httpDialers, frontedDialer)
 	}
 }
 
@@ -83,35 +89,43 @@ func (k *kindling) newRaceTransport() http.RoundTripper {
 	return newRaceTransport(k.httpDialers...)
 }
 
-func newFrontedDialer(configURL, countryCode string) httpDialer {
+func newFrontedDialer(configURL, countryCode string) (httpDialer, error) {
 	// Parse the domain from the URL.
 	u, err := url.Parse(configURL)
 	if err != nil {
 		slog.Error("Failed to parse URL", "error", err)
-		return nil
+		return nil, fmt.Errorf("failed to parse URL: %v", err)
 	}
 	// Extract the domain from the URL.
 	domain := u.Host
 
 	// First, download the file from the specified URL using the smart dialer.
 	// Then, create a new fronted instance with the downloaded file.
+	transport, err := newSmartHTTPTransport(domain)
+	if err != nil {
+		slog.Error("Failed to create smart HTTP transport", "error", err)
+		return nil, fmt.Errorf("failed to create smart HTTP transport: %v", err)
+	}
 	httpClient := &http.Client{
-		Transport: newSmartHTTPTransport(domain),
+		Transport: transport,
 	}
 	fr := fronted.NewFronted(
 		fronted.WithHTTPClient(httpClient),
 		fronted.WithConfigURL(configURL),
 		fronted.WithCountryCode(countryCode),
 	)
-	return fr.NewConnectedRoundTripper
+	return fr.NewConnectedRoundTripper, nil
 }
 
 func newSmartHTTPDialer(domains ...string) httpDialer {
-	d := newSmartDialer(domains...)
 	return func(ctx context.Context, addr string) (http.RoundTripper, error) {
+		d, err := newSmartDialer(domains...)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create smart dialer: %v", err)
+		}
 		streamConn, err := d.DialStream(ctx, addr)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to dial stream: %v", err)
 		}
 		return newTransportWithDialContect(func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return streamConn, nil
@@ -119,15 +133,19 @@ func newSmartHTTPDialer(domains ...string) httpDialer {
 	}
 }
 
-func newSmartHTTPTransport(domains ...string) *http.Transport {
-	d := newSmartDialer(domains...)
+func newSmartHTTPTransport(domains ...string) (*http.Transport, error) {
+	d, err := newSmartDialer(domains...)
+	if err != nil {
+		slog.Error("Failed to create smart dialer", "error", err)
+		return nil, fmt.Errorf("failed to create smart dialer: %v", err)
+	}
 	return newTransportWithDialContect(func(ctx context.Context, network, addr string) (net.Conn, error) {
 		streamConn, err := d.DialStream(ctx, addr)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to dial stream: %v", err)
 		}
 		return streamConn, nil
-	})
+	}), nil
 }
 func newTransportWithDialContect(dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
 	return &http.Transport{
@@ -143,7 +161,7 @@ func newTransportWithDialContect(dialContext func(ctx context.Context, network, 
 //go:embed smart_dialer_config.yml
 var embedFS embed.FS
 
-func newSmartDialer(domains ...string) transport.StreamDialer {
+func newSmartDialer(domains ...string) (transport.StreamDialer, error) {
 	finder := &smart.StrategyFinder{
 		TestTimeout:  5 * time.Second,
 		LogWriter:    os.Stdout,
@@ -154,10 +172,12 @@ func newSmartDialer(domains ...string) transport.StreamDialer {
 	configBytes, err := embedFS.ReadFile("smart_dialer_config.yml")
 	if err != nil {
 		slog.Error("Failed to read smart dialer config", "error", err)
+		return nil, err
 	}
 	dialer, err := finder.NewDialer(context.Background(), domains, configBytes)
 	if err != nil {
 		slog.Error("Failed to create smart dialer", "error", err)
+		return nil, err
 	}
-	return dialer
+	return dialer, nil
 }
