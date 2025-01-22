@@ -2,8 +2,6 @@ module github.com/getlantern/kindling
 
 go 1.22.4
 
-replace github.com/getlantern/fronted => ../fronted
-
 require (
 	github.com/Jigsaw-Code/outline-sdk v0.0.18-0.20241106233708-faffebb12629
 	github.com/Jigsaw-Code/outline-sdk/x v0.0.0-20250113162209-efa808309e1e
