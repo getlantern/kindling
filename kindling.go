@@ -14,7 +14,10 @@ import (
 	"github.com/Jigsaw-Code/outline-sdk/transport"
 	"github.com/Jigsaw-Code/outline-sdk/x/smart"
 	"github.com/getlantern/fronted"
+	"github.com/getlantern/golog"
 )
+
+var log = golog.LoggerFor("kindling")
 
 // Kindling is the interface that wraps the basic Dial and DialContext methods for control
 // plane traffic.
