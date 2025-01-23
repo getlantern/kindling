@@ -80,7 +80,12 @@ func WithDoHTunnel() Option {
 // it accesses the control plane directly using a variety of proxyless techniques.
 func WithProxyless(domains ...string) Option {
 	return func(k *kindling) {
-		k.httpDialers = append(k.httpDialers, newSmartHTTPDialer(domains...))
+		smartDialer, err := newSmartHTTPDialer(domains...)
+		if err != nil {
+			slog.Error("Failed to create smart dialer", "error", err)
+			return
+		}
+		k.httpDialers = append(k.httpDialers, smartDialer)
 	}
 }
 
@@ -101,13 +106,13 @@ func newFrontedDialer(configURL, countryCode string) (httpDialer, error) {
 
 	// First, download the file from the specified URL using the smart dialer.
 	// Then, create a new fronted instance with the downloaded file.
-	transport, err := newSmartHTTPTransport(domain)
+	trans, err := newSmartHTTPTransport(domain)
 	if err != nil {
 		slog.Error("Failed to create smart HTTP transport", "error", err)
 		return nil, fmt.Errorf("failed to create smart HTTP transport: %v", err)
 	}
 	httpClient := &http.Client{
-		Transport: transport,
+		Transport: trans,
 	}
 	fr := fronted.NewFronted(
 		fronted.WithHTTPClient(httpClient),
@@ -117,12 +122,12 @@ func newFrontedDialer(configURL, countryCode string) (httpDialer, error) {
 	return fr.NewConnectedRoundTripper, nil
 }
 
-func newSmartHTTPDialer(domains ...string) httpDialer {
+func newSmartHTTPDialer(domains ...string) (httpDialer, error) {
+	d, err := newSmartDialer(domains...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create smart dialer: %v", err)
+	}
 	return func(ctx context.Context, addr string) (http.RoundTripper, error) {
-		d, err := newSmartDialer(domains...)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create smart dialer: %v", err)
-		}
 		streamConn, err := d.DialStream(ctx, addr)
 		if err != nil {
 			return nil, fmt.Errorf("failed to dial stream: %v", err)
@@ -130,7 +135,7 @@ func newSmartHTTPDialer(domains ...string) httpDialer {
 		return newTransportWithDialContect(func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return streamConn, nil
 		}), nil
-	}
+	}, nil
 }
 
 func newSmartHTTPTransport(domains ...string) (*http.Transport, error) {
