@@ -31,7 +31,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	span.SetAttributes(attribute.String("http.url", req.URL.String()))
 
-	log.Debugf("Starting RoundTrip race %v", req)
+	log.Debugf("Starting RoundTrip race %v", req.URL.Host)
 	// Try all methods in parallel and return the first successful response.
 	// If all fail, return the last error.
 	ctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
@@ -69,7 +69,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				cancelRoundTrip()
 				continue
 			}
-			log.Debugf("Got response for %v:\n%v", req.URL.Host, resp)
+			log.Debugf("Got response '%v' for %v", resp.Status, req.URL.Host)
 			cancelRoundTrip()
 			return resp, nil
 		case err := <-errCh:
