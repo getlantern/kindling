@@ -59,7 +59,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			log.Debugf("Got connected roundTripper for %v", req.URL.Host)
 			// Since we're already connected, set a lower timeout on the request context.
 			singleRTCtx, cancelRoundTrip := context.WithTimeout(reqRespCtx, 10*time.Second)
-			req = req.WithContext(singleRTCtx)
+			req = req.Clone(singleRTCtx)
 
 			// If we get a connection, try to send the request.
 			resp, err := roundTripper.RoundTrip(req)
@@ -84,8 +84,6 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 func (t *raceTransport) connectedRoundTripper(parentCtx context.Context, d httpDialer, req *http.Request, errCh chan error, roundTrippherCh chan http.RoundTripper, cancel context.CancelFunc, httpErrors *atomic.Int64) {
 	dialCtx, dialSpan := tracer.Start(parentCtx, "Dial")
 	defer dialSpan.End()
-
-	req = req.WithContext(dialCtx)
 
 	// We first create connected http.RoundTrippers prior to sending the request.
 	// With this method, we don't have to worry about the idempotency of the request
