@@ -68,15 +68,15 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	for i := 0; i < retryTimes; i++ {
 		select {
 		case roundTripper := <-roundTrippherCh:
-			log.Debugf("Got connected roundTripper")
+			log.Debugf("Got connected roundTripper for %v", req.URL.Host)
 			// If we get a connection, try to send the request.
 			resp, err := roundTripper.RoundTrip(req)
-			log.Debugf("Got response %v", resp)
 			// If the request fails, close the connection and return the error.
 			if err != nil {
 				log.Errorf("HTTP request failed %v", err)
 				continue
 			}
+			log.Debugf("Got response for %v:\n%v", req.URL.Host, resp)
 
 			cancel()
 			return resp, nil
