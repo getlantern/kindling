@@ -135,7 +135,7 @@ func newSmartHTTPDialer(domains ...string) (httpDialer, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to dial stream: %v", err)
 		}
-		return newTransportWithDialContect(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return newTransportWithDialContext(func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return streamConn, nil
 		}), nil
 	}, nil
@@ -147,7 +147,7 @@ func newSmartHTTPTransport(domains ...string) (*http.Transport, error) {
 		slog.Error("Failed to create smart dialer", "error", err)
 		return nil, fmt.Errorf("failed to create smart dialer: %v", err)
 	}
-	return newTransportWithDialContect(func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return newTransportWithDialContext(func(ctx context.Context, network, addr string) (net.Conn, error) {
 		streamConn, err := d.DialStream(ctx, addr)
 		if err != nil {
 			return nil, fmt.Errorf("failed to dial stream: %v", err)
@@ -155,7 +155,7 @@ func newSmartHTTPTransport(domains ...string) (*http.Transport, error) {
 		return streamConn, nil
 	}), nil
 }
-func newTransportWithDialContect(dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
+func newTransportWithDialContext(dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
 	return &http.Transport{
 		DialContext:           dialContext,
 		ForceAttemptHTTP2:     true,
