@@ -32,8 +32,8 @@ github.com/getlantern/fdcount v0.0.0-20190912142506-f89afd7367c4 h1:JdD4XSaT6/j6
 github.com/getlantern/fdcount v0.0.0-20190912142506-f89afd7367c4/go.mod h1:XZwE+iIlAgr64OFbXKFNCllBwV4wEipPx8Hlo2gZdbM=
 github.com/getlantern/filepersist v0.0.0-20160317154340-c5f0cd24e799 h1:FhkPUYCQYmoxS02r2GRrIV7dahUIncRl36xzs3/mnjA=
 github.com/getlantern/filepersist v0.0.0-20160317154340-c5f0cd24e799/go.mod h1:8DGAx0LNUfXNnEH+fXI0s3OCBA/351kZCiz/8YSK3i8=
-github.com/getlantern/fronted v0.0.0-20250129182918-a9a66b5c05e8 h1:k2C1jG9/j9v1Ev0l+xeUK2rvS1kHzY+KIYqF3sfdnKs=
-github.com/getlantern/fronted v0.0.0-20250129182918-a9a66b5c05e8/go.mod h1:/4g6lEMXHzkF/6WBr3vod4wh3tos632qSZGh7L/fIdg=
+github.com/getlantern/fronted v0.0.0-20250129184840-abcec12f754e h1:8PIYFbAAudnyn6LhMU+hqGEU6qUJ8Tt84LSs6QYD/tg=
+github.com/getlantern/fronted v0.0.0-20250129184840-abcec12f754e/go.mod h1:/4g6lEMXHzkF/6WBr3vod4wh3tos632qSZGh7L/fIdg=
 github.com/getlantern/golog v0.0.0-20190830074920-4ef2e798c2d7/go.mod h1:zx/1xUUeYPy3Pcmet8OSXLbF47l+3y6hIPpyLWoR9oc=
 github.com/getlantern/golog v0.0.0-20210606115803-bce9f9fe5a5f/go.mod h1:ZyIjgH/1wTCl+B+7yH1DqrWp6MPJqESmwmEQ89ZfhvA=
 github.com/getlantern/golog v0.0.0-20230503153817-8e72de7e0a65 h1:NlQedYmPI3pRAXJb+hLVVDGqfvvXGRPV8vp7XOjKAZ0=
