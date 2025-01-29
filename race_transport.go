@@ -39,7 +39,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Note that this will cancel the context when the first response is received,
 	// canceling any other in-flight requests that respect the context (which they should).
 	defer cancel()
-	var httpErrors *atomic.Int64
+	var httpErrors = new(atomic.Int64)
 	var roundTrippherCh = make(chan http.RoundTripper)
 	var errCh = make(chan error)
 	log.Debugf("Dialing with %v dialers", len(t.httpDialers))
