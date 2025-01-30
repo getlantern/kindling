@@ -31,7 +31,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	span.SetAttributes(attribute.String("http.url", req.URL.String()))
 
-	log.Debugf("Starting RoundTrip race %v", req.URL.Host)
+	log.Debug("Starting RoundTrip race", "host", req.URL.Host)
 	// Try all methods in parallel and return the first successful response.
 	// If all fail, return the last error.
 	ctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
@@ -42,7 +42,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var httpErrors = new(atomic.Int64)
 	var roundTrippherCh = make(chan http.RoundTripper)
 	var errCh = make(chan error)
-	log.Debugf("Dialing with %v dialers", len(t.httpDialers))
+	log.Debug(fmt.Sprintf("Dialing with %v dialers", len(t.httpDialers)))
 	for _, d := range t.httpDialers {
 		go func(d httpDialer) {
 			t.connectedRoundTripper(ctx, d, req, errCh, roundTrippherCh, cancel, httpErrors)
@@ -56,7 +56,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	for i := 0; i < retryTimes; i++ {
 		select {
 		case roundTripper := <-roundTrippherCh:
-			log.Debugf("Got connected roundTripper for %v", req.URL.Host)
+			log.Debug("Got connected roundTripper", "host", req.URL.Host)
 			// Since we're already connected, set a lower timeout on the request context.
 			singleRTCtx, cancelRoundTrip := context.WithTimeout(reqRespCtx, 10*time.Second)
 			req = req.Clone(singleRTCtx)
@@ -65,11 +65,11 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			resp, err := roundTripper.RoundTrip(req)
 			// If the request fails, close the connection and return the error.
 			if err != nil {
-				log.Errorf("HTTP request failed %v", err)
+				log.Error("HTTP request failed", "err", err)
 				cancelRoundTrip()
 				continue
 			}
-			log.Debugf("Got response '%v' for %v", resp.Status, req.URL.Host)
+			log.Debug("Got response", "status", resp.Status, "host", req.URL.Host)
 			cancelRoundTrip()
 			return resp, nil
 		case err := <-errCh:
@@ -100,15 +100,15 @@ func (t *raceTransport) connectedRoundTripper(parentCtx context.Context, d httpD
 			addr = net.JoinHostPort(addr, "80")
 		}
 	}
-	log.Debugf("Dialing %v", addr)
+	log.Debug("Dialing", "addr", addr)
 	connectedRoundTripper, err := d(dialCtx, addr)
 	if err != nil {
-		log.Errorf("Error dialing to %v:\n%v", addr, err)
+		log.Error("Error dialing", "addr", addr, "err", err)
 		if httpErrors.Add(1) == int64(len(t.httpDialers)) {
 			errCh <- fmt.Errorf("failed to connect to any dialer with last error: %v", err)
 		}
 	} else {
-		log.Debugf("Dialing done %v", addr)
+		log.Debug("Dialing done", "err", addr)
 		roundTrippherCh <- connectedRoundTripper
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -14,15 +15,13 @@ import (
 	"github.com/Jigsaw-Code/outline-sdk/transport"
 	"github.com/Jigsaw-Code/outline-sdk/x/smart"
 	"github.com/getlantern/fronted"
-	"github.com/getlantern/golog"
 )
 
-var log = golog.LoggerFor("kindling")
+var log *slog.Logger
 
 // Kindling is the interface that wraps the basic Dial and DialContext methods for control
 // plane traffic.
 type Kindling interface {
-
 	// NewHTTPClient returns a new HTTP client that is configured to use kindling.
 	NewHTTPClient() *http.Client
 }
@@ -31,6 +30,7 @@ type httpDialer func(ctx context.Context, addr string) (http.RoundTripper, error
 
 type kindling struct {
 	httpDialers []httpDialer
+	logWriter   io.Writer
 }
 
 // Make sure that kindling implements the Kindling interface.
@@ -42,11 +42,14 @@ type Option func(*kindling)
 // NewKindling returns a new Kindling.
 func NewKindling(options ...Option) Kindling {
 	k := &kindling{}
+	k.logWriter = os.Stdout
+
 	// Apply all the functional options to configure the client.
 	for _, opt := range options {
 		opt(k)
 	}
 
+	log = slog.New(slog.NewTextHandler(k.logWriter, &slog.HandlerOptions{}))
 	return k
 }
 
@@ -63,9 +66,9 @@ func (k *kindling) NewHTTPClient() *http.Client {
 // WithDomainFronting is a functional option that enables domain fronting for the Kindling.
 func WithDomainFronting(configURL, countryCode string) Option {
 	return func(k *kindling) {
-		frontedDialer, err := newFrontedDialer(configURL, countryCode)
+		frontedDialer, err := k.newFrontedDialer(configURL, countryCode)
 		if err != nil {
-			slog.Error("Failed to create fronted dialer", "error", err)
+			log.Error("Failed to create fronted dialer", "error", err)
 			return
 		}
 		k.httpDialers = append(k.httpDialers, frontedDialer)
@@ -79,13 +82,22 @@ func WithDoHTunnel() Option {
 	}
 }
 
+// WithLogWriter is a functional option that sets the log writer for the Kindling.
+// By default, the log writer is set to os.Stdout.
+// This should be the first option to be applied to the Kindling to ensure that all logs are captured.
+func WithLogWriter(w io.Writer) Option {
+	return func(k *kindling) {
+		k.logWriter = w
+	}
+}
+
 // WithProxyless is a functional option that enables proxyless mode for the Kindling such that
 // it accesses the control plane directly using a variety of proxyless techniques.
 func WithProxyless(domains ...string) Option {
 	return func(k *kindling) {
-		smartDialer, err := newSmartHTTPDialer(domains...)
+		smartDialer, err := k.newSmartHTTPDialer(domains...)
 		if err != nil {
-			slog.Error("Failed to create smart dialer", "error", err)
+			log.Error("Failed to create smart dialer", "error", err)
 			return
 		}
 		k.httpDialers = append(k.httpDialers, smartDialer)
@@ -97,11 +109,11 @@ func (k *kindling) newRaceTransport() http.RoundTripper {
 	return newRaceTransport(k.httpDialers...)
 }
 
-func newFrontedDialer(configURL, countryCode string) (httpDialer, error) {
+func (k *kindling) newFrontedDialer(configURL, countryCode string) (httpDialer, error) {
 	// Parse the domain from the URL.
 	u, err := url.Parse(configURL)
 	if err != nil {
-		slog.Error("Failed to parse URL", "error", err)
+		log.Error("Failed to parse URL", "error", err)
 		return nil, fmt.Errorf("failed to parse URL: %v", err)
 	}
 	// Extract the domain from the URL.
@@ -109,9 +121,9 @@ func newFrontedDialer(configURL, countryCode string) (httpDialer, error) {
 
 	// First, download the file from the specified URL using the smart dialer.
 	// Then, create a new fronted instance with the downloaded file.
-	trans, err := newSmartHTTPTransport(domain)
+	trans, err := k.newSmartHTTPTransport(domain)
 	if err != nil {
-		slog.Error("Failed to create smart HTTP transport", "error", err)
+		log.Error("Failed to create smart HTTP transport", "error", err)
 		return nil, fmt.Errorf("failed to create smart HTTP transport: %v", err)
 	}
 	httpClient := &http.Client{
@@ -125,8 +137,8 @@ func newFrontedDialer(configURL, countryCode string) (httpDialer, error) {
 	return fr.NewConnectedRoundTripper, nil
 }
 
-func newSmartHTTPDialer(domains ...string) (httpDialer, error) {
-	d, err := newSmartDialer(domains...)
+func (k *kindling) newSmartHTTPDialer(domains ...string) (httpDialer, error) {
+	d, err := k.newSmartDialer(domains...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create smart dialer: %v", err)
 	}
@@ -135,19 +147,19 @@ func newSmartHTTPDialer(domains ...string) (httpDialer, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to dial stream: %v", err)
 		}
-		return newTransportWithDialContext(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return k.newTransportWithDialContext(func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return streamConn, nil
 		}), nil
 	}, nil
 }
 
-func newSmartHTTPTransport(domains ...string) (*http.Transport, error) {
-	d, err := newSmartDialer(domains...)
+func (k *kindling) newSmartHTTPTransport(domains ...string) (*http.Transport, error) {
+	d, err := k.newSmartDialer(domains...)
 	if err != nil {
-		slog.Error("Failed to create smart dialer", "error", err)
+		log.Error("Failed to create smart dialer", "error", err)
 		return nil, fmt.Errorf("failed to create smart dialer: %v", err)
 	}
-	return newTransportWithDialContext(func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return k.newTransportWithDialContext(func(ctx context.Context, network, addr string) (net.Conn, error) {
 		streamConn, err := d.DialStream(ctx, addr)
 		if err != nil {
 			return nil, fmt.Errorf("failed to dial stream: %v", err)
@@ -155,7 +167,8 @@ func newSmartHTTPTransport(domains ...string) (*http.Transport, error) {
 		return streamConn, nil
 	}), nil
 }
-func newTransportWithDialContext(dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
+
+func (k *kindling) newTransportWithDialContext(dialContext func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
 	return &http.Transport{
 		DialContext:           dialContext,
 		ForceAttemptHTTP2:     true,
@@ -169,22 +182,22 @@ func newTransportWithDialContext(dialContext func(ctx context.Context, network, 
 //go:embed smart_dialer_config.yml
 var embedFS embed.FS
 
-func newSmartDialer(domains ...string) (transport.StreamDialer, error) {
+func (k *kindling) newSmartDialer(domains ...string) (transport.StreamDialer, error) {
 	finder := &smart.StrategyFinder{
 		TestTimeout:  5 * time.Second,
-		LogWriter:    os.Stdout,
+		LogWriter:    k.logWriter,
 		StreamDialer: &transport.TCPDialer{},
 		PacketDialer: &transport.UDPDialer{},
 	}
 
 	configBytes, err := embedFS.ReadFile("smart_dialer_config.yml")
 	if err != nil {
-		slog.Error("Failed to read smart dialer config", "error", err)
+		log.Error("Failed to read smart dialer config", "error", err)
 		return nil, err
 	}
 	dialer, err := finder.NewDialer(context.Background(), domains, configBytes)
 	if err != nil {
-		slog.Error("Failed to create smart dialer", "error", err)
+		log.Error("Failed to create smart dialer", "error", err)
 		return nil, err
 	}
 	return dialer, nil
