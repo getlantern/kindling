@@ -49,7 +49,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}(d)
 	}
 	// Create a span for the request/response cycle.
-	reqRespCtx, reqRespSpan := tracer.Start(ctx, "RequestResponse")
+	ctx, reqRespSpan := tracer.Start(ctx, "RequestResponse")
 	defer reqRespSpan.End()
 	// Select up to the first response or error, or until we've hit the target number of tries or the context is canceled.
 	retryTimes := 3
@@ -57,20 +57,14 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		select {
 		case roundTripper := <-roundTrippherCh:
 			log.Debug("Got connected roundTripper", "host", req.URL.Host)
-			// Since we're already connected, set a lower timeout on the request context.
-			singleRTCtx, cancelRoundTrip := context.WithTimeout(reqRespCtx, 10*time.Second)
-			req = req.Clone(singleRTCtx)
-
 			// If we get a connection, try to send the request.
 			resp, err := roundTripper.RoundTrip(req)
 			// If the request fails, close the connection and return the error.
 			if err != nil {
 				log.Error("HTTP request failed", "err", err)
-				cancelRoundTrip()
 				continue
 			}
-			log.Debug("Got response", "status", resp.Status, "host", req.URL.Host)
-			cancelRoundTrip()
+			log.Debug("Got response:", "status", resp.Status, "host", req.URL.Host)
 			return resp, nil
 		case err := <-errCh:
 			return nil, err
