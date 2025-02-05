@@ -45,7 +45,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	log.Debug(fmt.Sprintf("Dialing with %v dialers", len(t.httpDialers)))
 	for _, d := range t.httpDialers {
 		go func(d httpDialer) {
-			t.connectedRoundTripper(ctx, d, req, errCh, roundTrippherCh, cancel, httpErrors)
+			t.connectedRoundTripper(ctx, d, req, errCh, roundTrippherCh, httpErrors)
 		}(d)
 	}
 	// Select up to the first response or error, or until we've hit the target number of tries or the context is canceled.
@@ -72,7 +72,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return nil, errors.New("failed to get response")
 }
 
-func (t *raceTransport) connectedRoundTripper(parentCtx context.Context, d httpDialer, req *http.Request, errCh chan error, roundTrippherCh chan http.RoundTripper, cancel context.CancelFunc, httpErrors *atomic.Int64) {
+func (t *raceTransport) connectedRoundTripper(parentCtx context.Context, d httpDialer, req *http.Request, errCh chan error, roundTrippherCh chan http.RoundTripper, httpErrors *atomic.Int64) {
 	dialCtx, dialSpan := tracer.Start(parentCtx, "Dial")
 	defer dialSpan.End()
 
