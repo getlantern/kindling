@@ -48,9 +48,6 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			t.connectedRoundTripper(ctx, d, req, errCh, roundTrippherCh, cancel, httpErrors)
 		}(d)
 	}
-	// Create a span for the request/response cycle.
-	ctx, reqRespSpan := tracer.Start(ctx, "RequestResponse")
-	defer reqRespSpan.End()
 	// Select up to the first response or error, or until we've hit the target number of tries or the context is canceled.
 	retryTimes := 3
 	for i := 0; i < retryTimes; i++ {
