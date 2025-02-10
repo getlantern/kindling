@@ -33,6 +33,7 @@ type httpDialer func(ctx context.Context, addr string) (http.RoundTripper, error
 type kindling struct {
 	httpDialers []httpDialer
 	rootCA      string
+	logWriter   io.Writer
 }
 
 // Make sure that kindling implements the Kindling interface.
@@ -43,7 +44,10 @@ type Option func(*kindling)
 
 // NewKindling returns a new Kindling.
 func NewKindling(options ...Option) Kindling {
-	k := &kindling{}
+	k := &kindling{
+		logWriter: os.Stdout,
+	}
+
 	// Apply all the functional options to configure the client.
 	for _, opt := range options {
 		opt(k)
@@ -85,6 +89,7 @@ func WithRootCA(rootCA string) Option {
 // This should be the first option to be applied to the Kindling to ensure that all logs are captured.
 func WithLogWriter(w io.Writer) Option {
 	return func(k *kindling) {
+		k.logWriter = w
 		log = slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{}))
 	}
 }
