@@ -19,7 +19,7 @@ import (
 	"github.com/getlantern/fronted"
 )
 
-var log *slog.Logger
+var log *slog.Logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
 
 // Kindling is the interface that wraps the basic Dial and DialContext methods for control
 // plane traffic.
@@ -32,7 +32,6 @@ type httpDialer func(ctx context.Context, addr string) (http.RoundTripper, error
 
 type kindling struct {
 	httpDialers []httpDialer
-	logWriter   io.Writer
 	rootCA      string
 }
 
@@ -45,9 +44,6 @@ type Option func(*kindling)
 // NewKindling returns a new Kindling.
 func NewKindling(options ...Option) Kindling {
 	k := &kindling{}
-	k.logWriter = os.Stdout
-	log = slog.New(slog.NewTextHandler(k.logWriter, &slog.HandlerOptions{}))
-
 	// Apply all the functional options to configure the client.
 	for _, opt := range options {
 		opt(k)
@@ -89,7 +85,7 @@ func WithRootCA(rootCA string) Option {
 // This should be the first option to be applied to the Kindling to ensure that all logs are captured.
 func WithLogWriter(w io.Writer) Option {
 	return func(k *kindling) {
-		k.logWriter = w
+		log = slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{}))
 	}
 }
 
