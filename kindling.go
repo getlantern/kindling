@@ -46,13 +46,12 @@ type Option func(*kindling)
 func NewKindling(options ...Option) Kindling {
 	k := &kindling{}
 	k.logWriter = os.Stdout
+	log = slog.New(slog.NewTextHandler(k.logWriter, &slog.HandlerOptions{}))
 
 	// Apply all the functional options to configure the client.
 	for _, opt := range options {
 		opt(k)
 	}
-
-	log = slog.New(slog.NewTextHandler(k.logWriter, &slog.HandlerOptions{}))
 	return k
 }
 
