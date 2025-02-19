@@ -140,6 +140,7 @@ func (k *kindling) newFrontedDialer(configURL, countryCode string) (httpDialer, 
 		Transport: trans,
 	}
 	fr := fronted.NewFronted(
+		fronted.WithPanicListener(k.panicListener),
 		fronted.WithHTTPClient(httpClient),
 		fronted.WithConfigURL(configURL),
 		fronted.WithCountryCode(countryCode),
