@@ -31,9 +31,10 @@ type Kindling interface {
 type httpDialer func(ctx context.Context, addr string) (http.RoundTripper, error)
 
 type kindling struct {
-	httpDialers []httpDialer
-	rootCA      string
-	logWriter   io.Writer
+	httpDialers   []httpDialer
+	rootCA        string
+	logWriter     io.Writer
+	panicListener func(string)
 }
 
 // Make sure that kindling implements the Kindling interface.
@@ -107,9 +108,15 @@ func WithProxyless(domains ...string) Option {
 	}
 }
 
+func WithPanicListener(panicListener func(string)) Option {
+	return func(k *kindling) {
+		k.panicListener = panicListener
+	}
+}
+
 func (k *kindling) newRaceTransport() http.RoundTripper {
 	// Now create a RoundTripper that races between the available options.
-	return newRaceTransport(k.httpDialers...)
+	return newRaceTransport(k.panicListener, k.httpDialers...)
 }
 
 func (k *kindling) newFrontedDialer(configURL, countryCode string) (httpDialer, error) {

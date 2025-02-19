@@ -16,12 +16,19 @@ import (
 var tracer = otel.Tracer("kindling")
 
 type raceTransport struct {
-	httpDialers []httpDialer
+	httpDialers   []httpDialer
+	panicListener func(string)
 }
 
-func newRaceTransport(httpDialers ...httpDialer) http.RoundTripper {
+func newRaceTransport(panicListener func(string), httpDialers ...httpDialer) http.RoundTripper {
+	if panicListener == nil {
+		panicListener = func(msg string) {
+			log.Error(msg)
+		}
+	}
 	return &raceTransport{
-		httpDialers: httpDialers,
+		httpDialers:   httpDialers,
+		panicListener: panicListener,
 	}
 }
 
@@ -45,6 +52,13 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	log.Debug(fmt.Sprintf("Dialing with %v dialers", len(t.httpDialers)))
 	for _, d := range t.httpDialers {
 		go func(d httpDialer) {
+			// Recover from panics in the dialer.
+			defer func() {
+				if r := recover(); r != nil {
+					t.panicListener(fmt.Sprintf("panic in dialer: %v", r))
+					errCh <- fmt.Errorf("panic in dialer: %v", r)
+				}
+			}()
 			t.connectedRoundTripper(ctx, d, req, errCh, roundTrippherCh, httpErrors)
 		}(d)
 	}
