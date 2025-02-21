@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/Jigsaw-Code/outline-sdk/transport"
@@ -19,7 +20,7 @@ import (
 	"github.com/getlantern/fronted"
 )
 
-var log *slog.Logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
+var log = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
 
 // Kindling is the interface that wraps the basic Dial and DialContext methods for control
 // plane traffic.
@@ -41,7 +42,10 @@ type kindling struct {
 var _ Kindling = &kindling{}
 
 // Option is a functional option type that allows us to configure the Client.
-type Option func(*kindling)
+type Option interface {
+	apply(*kindling)
+	priority() int
+}
 
 // NewKindling returns a new Kindling.
 func NewKindling(options ...Option) Kindling {
@@ -49,9 +53,12 @@ func NewKindling(options ...Option) Kindling {
 		logWriter: os.Stdout,
 	}
 
+	// Sort the options by priority in case some options depend on others.
+	sort.Sort(byPriority(options))
+
 	// Apply all the functional options to configure the client.
 	for _, opt := range options {
-		opt(k)
+		opt.apply(k)
 	}
 	return k
 }
@@ -68,50 +75,62 @@ func (k *kindling) NewHTTPClient() *http.Client {
 
 // WithDomainFronting is a functional option that enables domain fronting for the Kindling.
 func WithDomainFronting(configURL, countryCode string) Option {
-	return func(k *kindling) {
+	return newOption(func(k *kindling) {
+		slog.Info("Setting domain fronting")
 		frontedDialer, err := k.newFrontedDialer(configURL, countryCode)
 		if err != nil {
 			log.Error("Failed to create fronted dialer", "error", err)
 			return
 		}
 		k.httpDialers = append(k.httpDialers, frontedDialer)
-	}
+	})
+}
+
+// Sometimes we need an option to be set prior to other options that depend on it, so we
+// set the priority and store the options prior to exexuting them.
+func newOptionWithPriority(apply func(*kindling), priority int) Option {
+	return &option{applyFunc: apply, priorityInt: priority}
 }
 
 // WithRootCA pins the root CA to use for TLS.
 func WithRootCA(rootCA string) Option {
-	return func(k *kindling) {
+	return newOption(func(k *kindling) {
 		k.rootCA = rootCA
-	}
+	})
 }
 
 // WithLogWriter is a functional option that sets the log writer for the Kindling.
 // By default, the log writer is set to os.Stdout.
 // This should be the first option to be applied to the Kindling to ensure that all logs are captured.
 func WithLogWriter(w io.Writer) Option {
-	return func(k *kindling) {
+	return newOption(func(k *kindling) {
 		k.logWriter = w
 		log = slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{}))
-	}
+	})
 }
 
 // WithProxyless is a functional option that enables proxyless mode for the Kindling such that
 // it accesses the control plane directly using a variety of proxyless techniques.
 func WithProxyless(domains ...string) Option {
-	return func(k *kindling) {
+	return newOption(func(k *kindling) {
+		slog.Info("Setting proxyless mode")
 		smartDialer, err := k.newSmartHTTPDialer(domains...)
 		if err != nil {
 			log.Error("Failed to create smart dialer", "error", err)
 			return
 		}
 		k.httpDialers = append(k.httpDialers, smartDialer)
-	}
+	})
 }
 
+// WithPanicListener is a functional option that sets a panic listener that should be notified
+// whenever any goroutine panics. We set this with a higher priority so that it is set before
+// any other options that may depend on it.
 func WithPanicListener(panicListener func(string)) Option {
-	return func(k *kindling) {
+	return newOptionWithPriority(func(k *kindling) {
+		slog.Info("Setting panic listener")
 		k.panicListener = panicListener
-	}
+	}, 0) // Set the priority to 0 so that it is set before any other options.
 }
 
 func (k *kindling) newRaceTransport() http.RoundTripper {
@@ -226,3 +245,28 @@ func (k *kindling) newSmartDialer(domains ...string) (transport.StreamDialer, er
 	}
 	return dialer, nil
 }
+
+type option struct {
+	priorityInt int
+	applyFunc   func(*kindling)
+}
+
+func (o *option) apply(k *kindling) {
+	o.applyFunc(k)
+}
+
+func (o *option) priority() int {
+	return o.priorityInt
+}
+
+func newOption(apply func(*kindling)) Option {
+	return &option{applyFunc: apply, priorityInt: 1000}
+}
+
+// byPriority is a type that implements the sort interface for options so that
+// we can apply some options before others that may depend on them.
+type byPriority []Option
+
+func (bp byPriority) Len() int           { return len(bp) }
+func (bp byPriority) Less(i, j int) bool { return bp[i].priority() < bp[j].priority() }
+func (bp byPriority) Swap(i, j int)      { bp[i], bp[j] = bp[j], bp[i] }
