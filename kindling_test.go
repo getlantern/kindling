@@ -8,6 +8,22 @@ import (
 	"testing"
 )
 
+func TestNewKindling(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Success", func(t *testing.T) {
+		t.Parallel()
+
+		kindling := NewKindling(
+			WithDomainFronting("https://media.githubusercontent.com/media/getlantern/fronted/refs/heads/main/fronted.yaml.gz", ""),
+			WithPanicListener(func(string) {}),
+		)
+		if kindling == nil {
+			t.Errorf("NewKindling() = nil; want non-nil Kindling")
+		}
+	})
+}
+
 func TestLantern(t *testing.T) {
 	k := NewKindling(
 		//WithDomainFronting("https://media.githubusercontent.com/media/getlantern/fronted/refs/heads/main/fronted.yaml.gz", ""),
