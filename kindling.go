@@ -206,7 +206,7 @@ func (o *option) priority() int {
 }
 
 // Sometimes we need an option to be set prior to other options that depend on it, so we
-// set the priority and store the options prior to exexuting them.
+// set the priority and store the options prior to executing them.
 func newOptionWithPriority(apply func(*kindling), priority int) Option {
 	return &option{applyFunc: apply, priorityInt: priority}
 }
