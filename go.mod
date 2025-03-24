@@ -3,8 +3,8 @@ module github.com/getlantern/kindling
 go 1.22.4
 
 require (
-	github.com/Jigsaw-Code/outline-sdk v0.0.18-0.20241106233708-faffebb12629
-	github.com/Jigsaw-Code/outline-sdk/x v0.0.0-20250113162209-efa808309e1e
+	github.com/Jigsaw-Code/outline-sdk v0.0.19
+	github.com/Jigsaw-Code/outline-sdk/x v0.0.2
 	github.com/getlantern/fronted v0.0.0-20250324204348-a0f02f9a2843
 	go.opentelemetry.io/otel v1.19.0
 )
@@ -47,6 +47,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-stack/stack v1.8.1 // indirect
 	github.com/goccy/go-yaml v1.15.13 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/klauspost/compress v1.17.4 // indirect
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c // indirect
 	github.com/refraction-networking/utls v1.6.7 // indirect
