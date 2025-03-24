@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"testing"
+
+	"github.com/getlantern/fronted"
 )
 
 func TestNewKindling(t *testing.T) {
@@ -14,8 +16,10 @@ func TestNewKindling(t *testing.T) {
 	t.Run("Success", func(t *testing.T) {
 		t.Parallel()
 
+		f := fronted.NewFronted(
+			fronted.WithConfigURL("https://media.githubusercontent.com/media/getlantern/fronted/refs/heads/main/fronted.yaml.gz"))
 		kindling := NewKindling(
-			WithDomainFronting("https://media.githubusercontent.com/media/getlantern/fronted/refs/heads/main/fronted.yaml.gz", ""),
+			WithDomainFronting(f),
 			WithPanicListener(func(string) {}),
 		)
 		if kindling == nil {
