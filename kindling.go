@@ -81,6 +81,10 @@ func (k *kindling) NewHTTPClient() *http.Client {
 func WithDomainFronting(f fronted.Fronted) Option {
 	return newOption(func(k *kindling) {
 		slog.Info("Setting domain fronting")
+		if f == nil {
+			log.Error("Fronted instance is nil")
+			return
+		}
 		k.httpDialers = append(k.httpDialers, f.NewConnectedRoundTripper)
 	})
 }
