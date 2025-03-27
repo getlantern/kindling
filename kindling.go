@@ -91,7 +91,10 @@ func WithDomainFronting(f fronted.Fronted) Option {
 func WithLogWriter(w io.Writer) Option {
 	return newOptionWithPriority(func(k *kindling) {
 		k.logWriter = w
-		log = slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{}))
+		log = slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{
+			Level:     slog.LevelDebug,
+			AddSource: true,
+		}))
 	}, priorityLogWriter)
 }
 
@@ -100,7 +103,7 @@ func WithLogWriter(w io.Writer) Option {
 func WithProxyless(domains ...string) Option {
 	return newOption(func(k *kindling) {
 		slog.Info("Setting proxyless mode")
-		smartDialer, err := newSmartHTTPDialer(k.logWriter, domains...)
+		smartDialer, err := newSmartHTTPDialerFunc(k.logWriter, domains...)
 		if err != nil {
 			log.Error("Failed to create smart dialer", "error", err)
 			return
@@ -124,7 +127,7 @@ func (k *kindling) newRaceTransport() http.RoundTripper {
 	return newRaceTransport(k.panicListener, k.httpDialers...)
 }
 
-func newSmartHTTPDialer(logWriter io.Writer, domains ...string) (httpDialer, error) {
+func newSmartHTTPDialerFunc(logWriter io.Writer, domains ...string) (httpDialer, error) {
 	d, err := newSmartDialer(logWriter, domains...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create smart dialer: %v", err)

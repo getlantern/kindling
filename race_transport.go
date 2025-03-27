@@ -64,7 +64,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	// Select up to the first response or error, or until we've hit the target number of tries or the context is canceled.
 	retryTimes := 3
-	for i := 0; i < retryTimes; i++ {
+	for range retryTimes {
 		select {
 		case roundTripper := <-roundTrippherCh:
 			log.Debug("Got connected roundTripper", "host", req.URL.Host)
