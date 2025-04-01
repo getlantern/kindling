@@ -11,13 +11,11 @@ dns:
   - https:
       name: "8.8.4.4"
   - https:
-      name: 223.5.5.5
-  - https:
       name: "1.0.0.1"
   - https:
       name: "2606:4700:4700::1001"
   - https:
-      name: 223.5.5.5
+      name: "223.5.5.5"
   - https:
       name: "2620:119:35::35"
   - https:
