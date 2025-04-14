@@ -113,7 +113,7 @@ func (t *raceTransport) connectedRoundTripper(parentCtx context.Context, d httpD
 			errCh <- fmt.Errorf("failed to connect to any dialer with last error: %v", err)
 		}
 	} else {
-		log.Debug("Dialing done", "err", addr)
+		log.Debug("Dialing done", "addr", addr)
 		roundTrippherCh <- connectedRoundTripper
 	}
 }
