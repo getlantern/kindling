@@ -5,7 +5,7 @@ go 1.22.4
 require (
 	github.com/Jigsaw-Code/outline-sdk v0.0.19
 	github.com/Jigsaw-Code/outline-sdk/x v0.0.2
-	github.com/getlantern/fronted v0.0.0-20250424204635-788d061dfb61
+	github.com/getlantern/fronted v0.0.0-20250424205729-cbb127ee49ff
 	go.opentelemetry.io/otel v1.19.0
 )
 
