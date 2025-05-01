@@ -96,7 +96,6 @@ func WithLogWriter(w io.Writer) Option {
 	return newOptionWithPriority(func(k *kindling) {
 		k.logWriter = w
 		log = slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{
-			Level:     slog.LevelDebug,
 			AddSource: true,
 		}))
 	}, priorityLogWriter)

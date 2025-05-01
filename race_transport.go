@@ -8,12 +8,7 @@ import (
 	"net/http"
 	"sync/atomic"
 	"time"
-
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 )
-
-var tracer = otel.Tracer("kindling")
 
 type raceTransport struct {
 	httpDialers   []httpDialer
@@ -33,15 +28,10 @@ func newRaceTransport(panicListener func(string), httpDialers ...httpDialer) htt
 }
 
 func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	ctx, span := tracer.Start(req.Context(), "RoundTrip")
-	defer span.End()
-
-	span.SetAttributes(attribute.String("http.url", req.URL.String()))
-
 	log.Debug("Starting RoundTrip race", "host", req.URL.Host)
 	// Try all methods in parallel and return the first successful response.
 	// If all fail, return the last error.
-	ctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
+	ctx, cancel := context.WithTimeout(req.Context(), 1*time.Minute)
 
 	// Note that this will cancel the context when the first response is received,
 	// canceling any other in-flight requests that respect the context (which they should).
@@ -86,10 +76,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return nil, errors.New("failed to get response")
 }
 
-func (t *raceTransport) connectedRoundTripper(parentCtx context.Context, d httpDialer, req *http.Request, errCh chan error, roundTrippherCh chan http.RoundTripper, httpErrors *atomic.Int64) {
-	dialCtx, dialSpan := tracer.Start(parentCtx, "Dial")
-	defer dialSpan.End()
-
+func (t *raceTransport) connectedRoundTripper(ctx context.Context, d httpDialer, req *http.Request, errCh chan error, roundTrippherCh chan http.RoundTripper, httpErrors *atomic.Int64) {
 	// We first create connected http.RoundTrippers prior to sending the request.
 	// With this method, we don't have to worry about the idempotency of the request
 	// because we ultimately try the connections serially in the next step.
@@ -106,7 +93,7 @@ func (t *raceTransport) connectedRoundTripper(parentCtx context.Context, d httpD
 		}
 	}
 	log.Debug("Dialing", "addr", addr)
-	connectedRoundTripper, err := d(dialCtx, addr)
+	connectedRoundTripper, err := d(ctx, addr)
 	if err != nil {
 		log.Error("Error dialing", "addr", addr, "err", err)
 		if httpErrors.Add(1) == int64(len(t.httpDialers)) {
