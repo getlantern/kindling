@@ -7,7 +7,7 @@ toolchain go1.24.1
 require (
 	github.com/Jigsaw-Code/outline-sdk v0.0.19
 	github.com/Jigsaw-Code/outline-sdk/x v0.0.2
-	github.com/getlantern/fronted v0.0.0-20250501185902-0f6c04a1b15d
+	github.com/getlantern/fronted v0.0.0-20250506001345-27e1daa0a25e
 )
 
 require (
