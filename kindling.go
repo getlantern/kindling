@@ -14,6 +14,7 @@ import (
 
 	"github.com/Jigsaw-Code/outline-sdk/transport"
 	"github.com/Jigsaw-Code/outline-sdk/x/smart"
+	"github.com/getlantern/dnstt"
 	"github.com/getlantern/fronted"
 )
 
@@ -86,6 +87,19 @@ func WithDomainFronting(f fronted.Fronted) Option {
 			return
 		}
 		k.httpDialers = append(k.httpDialers, f.NewConnectedRoundTripper)
+	})
+}
+
+// WithDNSTunnel is a functional option that sets up a DNS tunnel for kindling using the provided
+// [dnstt.DNSTT] instance
+func WithDNSTunnel(d dnstt.DNSTT) Option {
+	return newOption(func(k *kindling) {
+		log.Info("Setting DNS tunnel")
+		if d == nil {
+			log.Error("DNSTT instance is nil")
+			return
+		}
+		k.httpDialers = append(k.httpDialers, d.NewRoundTripper)
 	})
 }
 
