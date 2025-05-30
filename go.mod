@@ -2,12 +2,10 @@ module github.com/getlantern/kindling
 
 go 1.24.0
 
-toolchain go1.24.1
-
 require (
 	github.com/Jigsaw-Code/outline-sdk v0.0.19
 	github.com/Jigsaw-Code/outline-sdk/x v0.0.2
-	github.com/getlantern/dnstt v0.0.0-20250526190307-1ea196f6cf5f
+	github.com/getlantern/dnstt v0.0.0-20250530230749-4d64f4edcf0f
 	github.com/getlantern/fronted v0.0.0-20250506001345-27e1daa0a25e
 )
 
