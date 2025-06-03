@@ -26,13 +26,17 @@ type Kindling interface {
 	// NewHTTPClient returns a new HTTP client that is configured to use kindling.
 	NewHTTPClient() *http.Client
 }
+type roundTripperGenerator interface {
+	roundTripper(ctx context.Context, addr string) (http.RoundTripper, error)
+	name() string
+}
 
-type httpDialer func(ctx context.Context, addr string) (http.RoundTripper, error)
+//type httpDialer func(ctx context.Context, addr string) (http.RoundTripper, error)
 
 type kindling struct {
-	httpDialers   []httpDialer
-	logWriter     io.Writer
-	panicListener func(string)
+	roundTripperGenerators []roundTripperGenerator
+	logWriter              io.Writer
+	panicListener          func(string)
 }
 
 // Make sure that kindling implements the Kindling interface.
@@ -86,7 +90,7 @@ func WithDomainFronting(f fronted.Fronted) Option {
 			log.Error("Fronted instance is nil")
 			return
 		}
-		k.httpDialers = append(k.httpDialers, f.NewConnectedRoundTripper)
+		k.roundTripperGenerators = append(k.roundTripperGenerators, namedDialer("fronted", f.NewConnectedRoundTripper))
 	})
 }
 
@@ -99,7 +103,7 @@ func WithDNSTunnel(d dnstt.DNSTT) Option {
 			log.Error("DNSTT instance is nil")
 			return
 		}
-		k.httpDialers = append(k.httpDialers, d.NewRoundTripper)
+		k.roundTripperGenerators = append(k.roundTripperGenerators, namedDialer("dnstt", d.NewRoundTripper))
 	})
 }
 
@@ -125,7 +129,7 @@ func WithProxyless(domains ...string) Option {
 			log.Error("Failed to create smart dialer", "error", err)
 			return
 		}
-		k.httpDialers = append(k.httpDialers, smartDialer)
+		k.roundTripperGenerators = append(k.roundTripperGenerators, smartDialer)
 	})
 }
 
@@ -141,15 +145,15 @@ func WithPanicListener(panicListener func(string)) Option {
 
 func (k *kindling) newRaceTransport() http.RoundTripper {
 	// Now create a RoundTripper that races between the available options.
-	return newRaceTransport(k.panicListener, k.httpDialers...)
+	return newRaceTransport(k.panicListener, k.roundTripperGenerators...)
 }
 
-func newSmartHTTPDialerFunc(logWriter io.Writer, domains ...string) (httpDialer, error) {
+func newSmartHTTPDialerFunc(logWriter io.Writer, domains ...string) (roundTripperGenerator, error) {
 	d, err := newSmartDialer(logWriter, domains...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create smart dialer: %v", err)
 	}
-	return func(ctx context.Context, addr string) (http.RoundTripper, error) {
+	return namedDialer("smart", func(ctx context.Context, addr string) (http.RoundTripper, error) {
 		streamConn, err := d.DialStream(ctx, addr)
 		if err != nil {
 			return nil, fmt.Errorf("failed to dial stream: %v", err)
@@ -157,7 +161,7 @@ func newSmartHTTPDialerFunc(logWriter io.Writer, domains ...string) (httpDialer,
 		return newTransportWithDialContext(func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return streamConn, nil
 		}), nil
-	}, nil
+	}), nil
 }
 
 // NewSmartHTTPTransport creates a new HTTP transport that uses the Outline smart dialer to dial to the
@@ -242,3 +246,29 @@ type byPriority []Option
 func (bp byPriority) Len() int           { return len(bp) }
 func (bp byPriority) Less(i, j int) bool { return bp[i].priority() < bp[j].priority() }
 func (bp byPriority) Swap(i, j int)      { bp[i], bp[j] = bp[j], bp[i] }
+
+type namedRoundTripperGenerator struct {
+	roundTripperName string
+	roundTripperFunc func(ctx context.Context, addr string) (http.RoundTripper, error)
+}
+
+func (d *namedRoundTripperGenerator) roundTripper(ctx context.Context, addr string) (http.RoundTripper, error) {
+	log.Debug("Dialing with named dialer", "name", d.name, "addr", addr)
+	roundTripper, err := d.roundTripperFunc(ctx, addr)
+	if err != nil {
+		log.Error("Failed to dial with named dialer", "name", d.name, "error", err)
+		return nil, fmt.Errorf("failed to dial with %s: %w", d.name, err)
+	}
+	return roundTripper, nil
+}
+
+func (d *namedRoundTripperGenerator) name() string {
+	return d.roundTripperName
+}
+
+func namedDialer(name string, roundTripper func(ctx context.Context, addr string) (http.RoundTripper, error)) roundTripperGenerator {
+	return &namedRoundTripperGenerator{
+		roundTripperName: name,
+		roundTripperFunc: roundTripper,
+	}
+}
