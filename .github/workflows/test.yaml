@@ -24,7 +24,7 @@ jobs:
       with:
         go-version-file: "go.mod"
     - name: Install go go-ctrf-json-reporter
-      run: go install github.com/ctrf-io/go-ctrf-json-reporter/cmd/go-ctrf-json-reporter@latest
+      run: go install github.com/ctrf-io/go-ctrf-json-reporter/cmd/go-ctrf-json-reporter@v0.0.8
     - name: Run tests
       run: go test -json -race -tags="headless" -coverprofile=profile.cov ./... | go-ctrf-json-reporter -output ctrf-report.json
     - name: Upload test results
