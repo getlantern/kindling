@@ -254,12 +254,7 @@ type namedRoundTripperGenerator struct {
 
 func (d *namedRoundTripperGenerator) roundTripper(ctx context.Context, addr string) (http.RoundTripper, error) {
 	log.Debug("Dialing with named dialer", "name", d.name, "addr", addr)
-	roundTripper, err := d.roundTripperFunc(ctx, addr)
-	if err != nil {
-		log.Error("Failed to dial with named dialer", "name", d.name, "error", err)
-		return nil, fmt.Errorf("failed to dial with %s: %w", d.name, err)
-	}
-	return roundTripper, nil
+	return d.roundTripperFunc(ctx, addr)
 }
 
 func (d *namedRoundTripperGenerator) name() string {
