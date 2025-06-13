@@ -97,13 +97,10 @@ func (t *raceTransport) connectedRoundTripper(ctx context.Context, d roundTrippe
 	} else {
 		log.Debug("Dialing done", "addr", addr)
 		log.Debug("Got connected roundTripper", "host", req.URL.Host)
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			// context is canceled - we should not proceed with the request
 			log.Debug("Context canceled before sending request", "host", req.URL.Host)
 			return
-		default:
-			// context is not canceled
 		}
 		// If we get a connection, try to send the request.
 		resp, err := connectedRoundTripper.RoundTrip(req)
