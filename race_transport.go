@@ -54,7 +54,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	// Select up to the first response or error, or until we've hit the target number of tries or the context is canceled.
 	retryTimes := 3
-	for i := 0; i < retryTimes; i++ {
+	for range retryTimes {
 		select {
 		case resp := <-responseChan:
 			log.Debug("Got response:", "status", resp.Status, "host", req.URL.Host)
@@ -97,6 +97,14 @@ func (t *raceTransport) connectedRoundTripper(ctx context.Context, d roundTrippe
 	} else {
 		log.Debug("Dialing done", "addr", addr)
 		log.Debug("Got connected roundTripper", "host", req.URL.Host)
+		select {
+		case <-ctx.Done():
+			// context is canceled - we should not proceed with the request
+			log.Debug("Context canceled before sending request", "host", req.URL.Host)
+			return
+		default:
+			// context is not canceled
+		}
 		// If we get a connection, try to send the request.
 		resp, err := connectedRoundTripper.RoundTrip(req)
 		if err != nil {
@@ -104,6 +112,14 @@ func (t *raceTransport) connectedRoundTripper(ctx context.Context, d roundTrippe
 			errFunc(err)
 			return
 		}
-		responseChan <- resp
+		select {
+		case responseChan <- resp:
+			// sent successfully
+		case <-ctx.Done():
+			// context canceled, close response to avoid leak
+			if resp != nil && resp.Body != nil {
+				resp.Body.Close()
+			}
+		}
 	}
 }
