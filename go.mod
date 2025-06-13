@@ -6,7 +6,7 @@ require (
 	github.com/Jigsaw-Code/outline-sdk v0.0.19
 	github.com/Jigsaw-Code/outline-sdk/x v0.0.2
 	github.com/getlantern/dnstt v0.0.0-20250530230749-4d64f4edcf0f
-	github.com/getlantern/fronted v0.0.0-20250506001345-27e1daa0a25e
+	github.com/getlantern/fronted v0.0.0-20250613043431-4eb545c2da45
 )
 
 require (
