@@ -100,6 +100,7 @@ func (t *raceTransport) connectedRoundTripper(ctx context.Context, d roundTrippe
 		if ctx.Err() != nil {
 			// context is canceled - we should not proceed with the request
 			log.Debug("Context canceled before sending request", "host", req.URL.Host)
+			errFunc(ctx.Err())
 			return
 		}
 		// If we get a connection, try to send the request.
