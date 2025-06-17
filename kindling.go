@@ -18,7 +18,7 @@ import (
 	"github.com/getlantern/fronted"
 )
 
-var log = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
+var log = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{AddSource: true}))
 
 // Kindling is the interface that wraps the basic Dial and DialContext methods for control
 // plane traffic.
@@ -85,7 +85,7 @@ func (k *kindling) NewHTTPClient() *http.Client {
 // the provided fronted.Fronted instance from https://github.com/getlantern/fronted.
 func WithDomainFronting(f fronted.Fronted) Option {
 	return newOption(func(k *kindling) {
-		slog.Info("Setting domain fronting")
+		log.Info("Setting domain fronting")
 		if f == nil {
 			log.Error("Fronted instance is nil")
 			return
@@ -115,6 +115,7 @@ func WithLogWriter(w io.Writer) Option {
 		k.logWriter = w
 		log = slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{
 			AddSource: true,
+			Level:     slog.LevelDebug, // Set the log level to debug for detailed output
 		}))
 	}, priorityLogWriter)
 }
@@ -138,7 +139,7 @@ func WithProxyless(domains ...string) Option {
 // any other options that may depend on it.
 func WithPanicListener(panicListener func(string)) Option {
 	return newOptionWithPriority(func(k *kindling) {
-		slog.Info("Setting panic listener")
+		log.Info("Setting panic listener")
 		k.panicListener = panicListener
 	}, priorityPanicListener) // Set the priority to 0 so that it is set before any other options.
 }

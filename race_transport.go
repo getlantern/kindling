@@ -85,7 +85,6 @@ func (t *raceTransport) connectedRoundTripper(ctx context.Context, d roundTrippe
 		}
 	}
 	errFunc := func(err error) {
-		log.Error("Error dialing", "addr", addr, "err", err)
 		if httpErrors.Add(1) == int64(len(t.roundTripperGenerators)) {
 			errCh <- fmt.Errorf("%v failed to connect to any dialer with last error: %v", d.name(), err)
 		}
