@@ -100,9 +100,9 @@ func (t *raceTransport) connectedRoundTripper(ctx context.Context, d roundTrippe
 			errFunc(ctx.Err())
 			return
 		}
-		req := cloneRequest(originalReq)
+		clonedReq := cloneRequest(originalReq)
 		// If we get a connection, try to send the request.
-		resp, err := connectedRoundTripper.RoundTrip(req)
+		resp, err := connectedRoundTripper.RoundTrip(clonedReq)
 		if err != nil {
 			log.Error("HTTP request failed", "err", err)
 			errFunc(err)
