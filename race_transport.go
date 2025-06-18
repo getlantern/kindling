@@ -38,8 +38,13 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// canceling any other in-flight requests that respect the context (which they should).
 	defer cancel()
 	var httpErrors = new(atomic.Int64)
-	var responseChan = make(chan *http.Response)
-	var errCh = make(chan error)
+	var rtChan = make(chan http.RoundTripper, len(t.roundTripperGenerators))
+	var errCh = make(chan error, len(t.roundTripperGenerators))
+	errFunc := func(err error) {
+		if httpErrors.Add(1) == int64(len(t.roundTripperGenerators)) {
+			errCh <- fmt.Errorf("failed to connect to any dialer with last error: %v", err)
+		}
+	}
 	log.Debug(fmt.Sprintf("Dialing with %v dialers", len(t.roundTripperGenerators)))
 	for _, d := range t.roundTripperGenerators {
 		go func(d roundTripperGenerator) {
@@ -50,15 +55,21 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 					errCh <- fmt.Errorf("panic in dialer: %v", r)
 				}
 			}()
-			t.connectedRoundTripper(ctx, d, req, errCh, responseChan, httpErrors)
+			t.connectedRoundTripper(ctx, d, req, errFunc, rtChan)
 		}(d)
 	}
 	// Select up to the first response or error, or until we've hit the target number of tries or the context is canceled.
 	retryTimes := 3
 	for range retryTimes {
 		select {
-		case resp := <-responseChan:
-			log.Debug("Got response:", "status", resp.Status, "host", req.URL.Host)
+		case rt := <-rtChan:
+			// If we get a connection, try to send the request.
+			resp, err := rt.RoundTrip(cloneRequest(req))
+			if err != nil {
+				log.Error("HTTP request failed", "err", err)
+				errFunc(err)
+				continue
+			}
 			return resp, nil
 		case err := <-errCh:
 			return nil, err
@@ -69,7 +80,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return nil, errors.New("failed to get response")
 }
 
-func (t *raceTransport) connectedRoundTripper(ctx context.Context, d roundTripperGenerator, originalReq *http.Request, errCh chan error, responseChan chan *http.Response, httpErrors *atomic.Int64) {
+func (t *raceTransport) connectedRoundTripper(ctx context.Context, d roundTripperGenerator, originalReq *http.Request, errFunc func(error), rtChan chan http.RoundTripper) {
 	// We first create connected http.RoundTrippers prior to sending the request.
 	// With this method, we don't have to worry about the idempotency of the request
 	// because we ultimately try the connections serially in the next step.
@@ -85,11 +96,7 @@ func (t *raceTransport) connectedRoundTripper(ctx context.Context, d roundTrippe
 			addr = net.JoinHostPort(addr, "80")
 		}
 	}
-	errFunc := func(err error) {
-		if httpErrors.Add(1) == int64(len(t.roundTripperGenerators)) {
-			errCh <- fmt.Errorf("%v failed to connect to any dialer with last error: %v", d.name(), err)
-		}
-	}
+
 	connectedRoundTripper, err := d.roundTripper(ctx, addr)
 	if err != nil {
 		errFunc(err)
@@ -100,23 +107,7 @@ func (t *raceTransport) connectedRoundTripper(ctx context.Context, d roundTrippe
 			errFunc(ctx.Err())
 			return
 		}
-		clonedReq := cloneRequest(originalReq)
-		// If we get a connection, try to send the request.
-		resp, err := connectedRoundTripper.RoundTrip(clonedReq)
-		if err != nil {
-			log.Error("HTTP request failed", "err", err)
-			errFunc(err)
-			return
-		}
-		select {
-		case responseChan <- resp:
-			// sent successfully
-		case <-ctx.Done():
-			// context canceled, close response to avoid leak
-			if resp != nil && resp.Body != nil {
-				resp.Body.Close()
-			}
-		}
+		rtChan <- connectedRoundTripper
 	}
 }
 
