@@ -13,6 +13,7 @@ The idea is to continually add more techniques as they become available such tha
 
 ```go
 k := kindling.NewKindling(
+	"myapp",
     kindling.WithDomainFronting("https://raw.githubusercontent.com/getlantern/fronted/refs/heads/main/fronted.yaml.gz"),
     kindling.WithProxyless("raw.githubusercontent.com"),
     kindling.WithDNSTunnel(newDNSTT()),

@@ -37,6 +37,7 @@ type kindling struct {
 	roundTripperGenerators []roundTripperGenerator
 	logWriter              io.Writer
 	panicListener          func(string)
+	appName                string // The name of the tool using kindling, used for logging and debugging.
 }
 
 // Make sure that kindling implements the Kindling interface.
@@ -55,10 +56,12 @@ type Option interface {
 	priority() int
 }
 
-// NewKindling returns a new Kindling.
-func NewKindling(options ...Option) Kindling {
+// NewKindling returns a new Kindling with the specified name of your tool and the options to use for
+// accessing control plane data.
+func NewKindling(name string, options ...Option) Kindling {
 	k := &kindling{
 		logWriter: os.Stdout,
+		appName:   name,
 	}
 
 	// Sort the options by priority in case some options depend on others.
@@ -146,7 +149,7 @@ func WithPanicListener(panicListener func(string)) Option {
 
 func (k *kindling) newRaceTransport() http.RoundTripper {
 	// Now create a RoundTripper that races between the available options.
-	return newRaceTransport(k.panicListener, k.roundTripperGenerators...)
+	return newRaceTransport(k.appName, k.panicListener, k.roundTripperGenerators...)
 }
 
 func newSmartHTTPDialerFunc(logWriter io.Writer, domains ...string) (roundTripperGenerator, error) {
