@@ -19,3 +19,23 @@ k := kindling.NewKindling(
 )
 httpClient := k.NewHTTPClient()
 ```
+
+## I want to add fuel to the fire (aka a new bootrapping technique!). What do I do?
+All you really need to do is to return an `http.RoundTripper` from whatever library you're adding. Then you simply need to add a method in `kindling.go` to allow callers to configure the new method. For DNS tunneling, for example, that method is as follows:
+
+```
+func WithDNSTunnel(d dnstt.DNSTT) Option {
+	return newOption(func(k *kindling) {
+		log.Info("Setting DNS tunnel")
+		if d == nil {
+			log.Error("DNSTT instance is nil")
+			return
+		}
+		k.roundTripperGenerators = append(k.roundTripperGenerators, namedDialer("dnstt", d.NewRoundTripper))
+	})
+}
+```
+
+It is also important to document any steps that kindling users must take in order to make the technique operational, if any. 
+
+Otherwise, just open a pull request, and we'll take it for a spin and will integrate it as soon as possible.
