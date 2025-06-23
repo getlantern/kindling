@@ -1,15 +1,21 @@
 # Kindling
-Library using a series of techniques to send and receive small amounts of data through censoring firewalls.
+Library using a series of redundant techniques to send and receive small amounts of data through censoring firewalls. This is ideal for accessing things like configuration files during the bootrapping phase as circumvention tools first start. Kindling is intended to be used by any circumvention tool written in Go that need to reliably fetch configuration data on startup. It is also designed to be easy for any developer to add a new technique that other tools may benefit from.
+
+The techniques integrated include:
+
+1) [Domain fronting](https://en.wikipedia.org/wiki/Domain_fronting).
+2) [Proxyless dialing from the Outline SDK](https://github.com/Jigsaw-Code/outline-sdk/tree/main/x/smart) that generally bypasses DNS-based and SNI-based blocking (i.e. works particularly well for broadly used services with a lot of IPs that are not IP-blocked)
+3) DNS tunneling via [DNSTT](https://www.bamsoftware.com/software/dnstt/)
+
+The idea is to continually add more techniques as they become available such that all tools have access to the most robust library possible for getting on the network quickly and reliably.
 
 ## Example
 
 ```go
 k := kindling.NewKindling(
-    kindling.WithLogWriter(os.Stdout),
     kindling.WithDomainFronting("https://url-with-gzipped-domain-fronting-config"),
-    kindling.WithProxyless("example.com"),
-    //kindling.WithDoHTunnel(),
-    //kindling.WithPushNotifications(),
+    kindling.WithProxyless("raw.githubusercontent.com"),
+    kindling.WithDNSTunnel(newDNSTT()),
 )
 httpClient := k.NewHTTPClient()
 ```
