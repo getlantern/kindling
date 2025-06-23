@@ -18,7 +18,7 @@ func TestNewKindling(t *testing.T) {
 
 		f := fronted.NewFronted(
 			fronted.WithConfigURL("https://media.githubusercontent.com/media/getlantern/fronted/refs/heads/main/fronted.yaml.gz"))
-		kindling := NewKindling(
+		kindling := NewKindling("kindling",
 			WithDomainFronting(f),
 			WithPanicListener(func(string) {}),
 		)
@@ -29,7 +29,7 @@ func TestNewKindling(t *testing.T) {
 }
 
 func TestLantern(t *testing.T) {
-	k := NewKindling(
+	k := NewKindling("kindling",
 		//WithDomainFronting("https://media.githubusercontent.com/media/getlantern/fronted/refs/heads/main/fronted.yaml.gz", ""),
 		WithProxyless("config.getiantem.org"),
 	)
@@ -109,7 +109,7 @@ func TestKindling(t *testing.T) {
 		t.Run("Success", func(t *testing.T) {
 			t.Parallel()
 
-			kindling := NewKindling()
+			kindling := NewKindling("kindling")
 			if kindling == nil {
 				t.Errorf("NewKindling() = nil; want non-nil Kindling")
 			}
@@ -122,7 +122,7 @@ func TestKindling(t *testing.T) {
 		t.Run("Success", func(t *testing.T) {
 			t.Parallel()
 
-			kindling := NewKindling()
+			kindling := NewKindling("kindling")
 			httpClient := kindling.NewHTTPClient()
 			if httpClient == nil {
 				t.Errorf("kindling.NewHTTPClient() = nil; want non-nil *http.Client")

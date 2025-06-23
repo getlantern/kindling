@@ -15,9 +15,10 @@ import (
 type raceTransport struct {
 	roundTripperGenerators []roundTripperGenerator
 	panicListener          func(string)
+	appName                string
 }
 
-func newRaceTransport(panicListener func(string), roundTripperGenerators ...roundTripperGenerator) http.RoundTripper {
+func newRaceTransport(appName string, panicListener func(string), roundTripperGenerators ...roundTripperGenerator) http.RoundTripper {
 	if panicListener == nil {
 		panicListener = func(msg string) {
 			log.Error(msg)
@@ -26,7 +27,13 @@ func newRaceTransport(panicListener func(string), roundTripperGenerators ...roun
 	return &raceTransport{
 		roundTripperGenerators: roundTripperGenerators,
 		panicListener:          panicListener,
+		appName:                appName,
 	}
+}
+
+type namedRoundTripper struct {
+	http.RoundTripper
+	name string
 }
 
 func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -38,7 +45,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// canceling any other in-flight requests that respect the context (which they should).
 	defer cancel()
 	var httpErrors = new(atomic.Int64)
-	var rtChan = make(chan http.RoundTripper, len(t.roundTripperGenerators))
+	var rtChan = make(chan *namedRoundTripper, len(t.roundTripperGenerators))
 	var errCh = make(chan error, len(t.roundTripperGenerators))
 	errFunc := func(err error) {
 		if httpErrors.Add(1) == int64(len(t.roundTripperGenerators)) {
@@ -64,7 +71,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		select {
 		case rt := <-rtChan:
 			// If we get a connection, try to send the request.
-			resp, err := rt.RoundTrip(cloneRequest(req))
+			resp, err := rt.RoundTrip(cloneRequest(req, t.appName, rt.name))
 			if err != nil {
 				log.Error("HTTP request failed", "err", err)
 				errFunc(err)
@@ -80,7 +87,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return nil, errors.New("failed to get response")
 }
 
-func (t *raceTransport) connectedRoundTripper(ctx context.Context, d roundTripperGenerator, originalReq *http.Request, errFunc func(error), rtChan chan http.RoundTripper) {
+func (t *raceTransport) connectedRoundTripper(ctx context.Context, d roundTripperGenerator, originalReq *http.Request, errFunc func(error), rtChan chan *namedRoundTripper) {
 	// We first create connected http.RoundTrippers prior to sending the request.
 	// With this method, we don't have to worry about the idempotency of the request
 	// because we ultimately try the connections serially in the next step.
@@ -107,7 +114,7 @@ func (t *raceTransport) connectedRoundTripper(ctx context.Context, d roundTrippe
 			errFunc(ctx.Err())
 			return
 		}
-		rtChan <- connectedRoundTripper
+		rtChan <- &namedRoundTripper{RoundTripper: connectedRoundTripper, name: d.name()}
 	}
 }
 
@@ -115,8 +122,10 @@ func (t *raceTransport) connectedRoundTripper(ctx context.Context, d roundTrippe
 // If the body is nil or http.NoBody, it simply returns a clone without reading the body.
 // This is important because, since we're racing requests, it's possible that the body
 // has been consumed by a previous request.
-func cloneRequest(req *http.Request) *http.Request {
+func cloneRequest(req *http.Request, app, method string) *http.Request {
 	clonedReq := req.Clone(req.Context())
+	clonedReq.Header.Add("X-Kindling-App", app)
+	clonedReq.Header.Add("X-Kindling-Method", method)
 	if req.Body == http.NoBody || req.Body == nil {
 		// If the request body is nil, we can just return a clone without reading it.
 		return clonedReq
