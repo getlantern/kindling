@@ -37,6 +37,6 @@ func WithDNSTunnel(d dnstt.DNSTT) Option {
 }
 ```
 
-It is also important to document any steps that kindling users must take in order to make the technique operational, if any. 
+It is also important to document any steps that kindling users must take in order to make the technique operational, if any. Does it require server-side components, for example?
 
 Otherwise, just open a pull request, and we'll take it for a spin and will integrate it as soon as possible.
