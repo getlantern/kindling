@@ -111,7 +111,7 @@ func WithDNSTunnel(d dnstt.DNSTT) Option {
 	})
 }
 
-// WithChampa is a functional option that set up Champa for kindling
+// WithChampa is a functional option that sets up Champa for kindling
 func WithChampa(c champa.Champa) Option {
 	return newOption(func(k *kindling) {
 		log.Info("Setting champa")
