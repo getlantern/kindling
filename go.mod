@@ -27,8 +27,9 @@ require (
 	github.com/alitto/pond/v2 v2.1.5 // indirect
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/cloudflare/circl v1.5.0 // indirect
-	github.com/flynn/noise v1.0.0 // indirect
+	github.com/flynn/noise v1.0.1-0.20220214164934-d803f5c4b0f4 // indirect
 	github.com/getlantern/byteexec v0.0.0-20170405023437-4cfb26ec74f4 // indirect
+	github.com/getlantern/champa v0.0.0-20250724145431-19c4b5ddb468 // indirect
 	github.com/getlantern/context v0.0.0-20220418194847-3d5e7a086201 // indirect
 	github.com/getlantern/elevate v0.0.0-20200430163644-2881a121236d // indirect
 	github.com/getlantern/errors v1.0.3 // indirect
@@ -68,5 +69,6 @@ require (
 	golang.org/x/net v0.39.0 // indirect
 	golang.org/x/sys v0.32.0 // indirect
 	golang.org/x/text v0.24.0 // indirect
+	www.bamsoftware.com/git/champa.git v0.20250620.0 // indirect
 	www.bamsoftware.com/git/dnstt.git v1.20241021.0 // indirect
 )

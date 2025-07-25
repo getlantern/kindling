@@ -14,6 +14,7 @@ import (
 
 	"github.com/Jigsaw-Code/outline-sdk/transport"
 	"github.com/Jigsaw-Code/outline-sdk/x/smart"
+	"github.com/getlantern/champa"
 	"github.com/getlantern/dnstt"
 	"github.com/getlantern/fronted"
 )
@@ -107,6 +108,18 @@ func WithDNSTunnel(d dnstt.DNSTT) Option {
 			return
 		}
 		k.roundTripperGenerators = append(k.roundTripperGenerators, namedDialer("dnstt", d.NewRoundTripper))
+	})
+}
+
+// WithChampa is a functional option that set up Champa for kindling
+func WithChampa(c champa.Champa) Option {
+	return newOption(func(k *kindling) {
+		log.Info("Setting champa")
+		if c == nil {
+			log.Error("Champa instance is nil")
+			return
+		}
+		k.roundTripperGenerators = append(k.roundTripperGenerators, namedDialer("champa", c.NewRoundTripper))
 	})
 }
 
