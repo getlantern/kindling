@@ -111,7 +111,7 @@ func WithDNSTunnel(d dnstt.DNSTT) Option {
 	})
 }
 
-// WithAMPCache use the AMP cache for making the request
+// WithAMPCache uses the AMP cache for making requests. It adds an 'amp' round tripper from the provided amp.Client.
 func WithAMPCache(c amp.Client) Option {
 	return newOption(func(k *kindling) {
 		log.Info("Setting amp fronting")
