@@ -14,7 +14,7 @@ import (
 
 	"github.com/Jigsaw-Code/outline-sdk/transport"
 	"github.com/Jigsaw-Code/outline-sdk/x/smart"
-	"github.com/getlantern/champa"
+	"github.com/getlantern/amp"
 	"github.com/getlantern/dnstt"
 	"github.com/getlantern/fronted"
 )
@@ -111,15 +111,15 @@ func WithDNSTunnel(d dnstt.DNSTT) Option {
 	})
 }
 
-// WithChampa is a functional option that set up Champa for kindling
-func WithChampa(c champa.Champa) Option {
+// WithAMPCache use the AMP cache for making the request
+func WithAMPCache(c amp.Client) Option {
 	return newOption(func(k *kindling) {
-		log.Info("Setting champa")
+		log.Info("Setting amp fronting")
 		if c == nil {
-			log.Error("Champa instance is nil")
+			log.Error("amp client is nil")
 			return
 		}
-		k.roundTripperGenerators = append(k.roundTripperGenerators, namedDialer("champa", c.NewRoundTripper))
+		k.roundTripperGenerators = append(k.roundTripperGenerators, namedDialer("amp", func(context.Context, string) (http.RoundTripper, error) { return c.RoundTripper() }))
 	})
 }
 
