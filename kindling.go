@@ -14,6 +14,7 @@ import (
 
 	"github.com/Jigsaw-Code/outline-sdk/transport"
 	"github.com/Jigsaw-Code/outline-sdk/x/smart"
+	"github.com/getlantern/amp"
 	"github.com/getlantern/dnstt"
 	"github.com/getlantern/fronted"
 )
@@ -107,6 +108,18 @@ func WithDNSTunnel(d dnstt.DNSTT) Option {
 			return
 		}
 		k.roundTripperGenerators = append(k.roundTripperGenerators, namedDialer("dnstt", d.NewRoundTripper))
+	})
+}
+
+// WithAMPCache uses the AMP cache for making requests. It adds an 'amp' round tripper from the provided amp.Client.
+func WithAMPCache(c amp.Client) Option {
+	return newOption(func(k *kindling) {
+		log.Info("Setting amp fronting")
+		if c == nil {
+			log.Error("amp client is nil")
+			return
+		}
+		k.roundTripperGenerators = append(k.roundTripperGenerators, namedDialer("amp", func(context.Context, string) (http.RoundTripper, error) { return c.RoundTripper() }))
 	})
 }
 
