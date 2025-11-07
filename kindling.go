@@ -270,7 +270,7 @@ type namedRoundTripperGenerator struct {
 }
 
 func (d *namedRoundTripperGenerator) roundTripper(ctx context.Context, addr string) (http.RoundTripper, error) {
-	log.Debug("Dialing with named dialer", "name", d.name, "addr", addr)
+	log.Debug("Dialing with named dialer", "name", d.roundTripperName, "addr", addr)
 	return d.roundTripperFunc(ctx, addr)
 }
 

@@ -73,10 +73,11 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			// If we get a connection, try to send the request.
 			resp, err := rt.RoundTrip(cloneRequest(req, t.appName, rt.name))
 			if err != nil {
-				log.Error("HTTP request failed", "err", err)
+				log.Error("HTTP request failed", "name", rt.name, "err", err)
 				errFunc(err)
 				continue
 			}
+			log.Info("HTTP request succeeded", "name", rt.name, "status", resp.StatusCode)
 			return resp, nil
 		case err := <-errCh:
 			return nil, err
