@@ -173,7 +173,7 @@ func newSmartHTTPDialerFunc(logWriter io.Writer, domains ...string) (roundTrippe
 	return namedDialer("smart", func(ctx context.Context, addr string) (http.RoundTripper, error) {
 		streamConn, err := d.DialStream(ctx, addr)
 		if err != nil {
-			return nil, fmt.Errorf("failed to dial stream: %v", err)
+			return nil, fmt.Errorf("failed to dial stream in smart dialer: %v", err)
 		}
 		return newTransportWithDialContext(func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return streamConn, nil
