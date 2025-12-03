@@ -99,7 +99,7 @@ func (k *kindling) ReplaceRoundTripGenerator(name string, rt func(ctx context.Co
 		}
 	}
 	if found == -1 {
-		return fmt.Errorf("provided round tripper couldn't be found: %q", name)
+		return fmt.Errorf("round trip generator not found: %q", name)
 	}
 	k.roundTripperGenerators[found] = namedDialer(name, rt)
 	return nil
