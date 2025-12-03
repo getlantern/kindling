@@ -2,6 +2,7 @@ package kindling
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -100,6 +101,12 @@ func newRequestWithHeaders(ctx context.Context, method, url string, body io.Read
 	return req, nil
 }
 
+type dummyRoundTripper struct{}
+
+func (d *dummyRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, nil
+}
+
 func TestKindling(t *testing.T) {
 	t.Parallel()
 
@@ -128,5 +135,37 @@ func TestKindling(t *testing.T) {
 				t.Errorf("kindling.NewHTTPClient() = nil; want non-nil *http.Client")
 			}
 		})
+	})
+
+	t.Run("kindling.ReplaceRoundTripGenerator", func(t *testing.T) {
+		k := &kindling{
+			roundTripperGenerators: []roundTripperGenerator{
+				namedDialer("foo", func(ctx context.Context, addr string) (http.RoundTripper, error) {
+					return &dummyRoundTripper{}, nil
+				}),
+				namedDialer("bar", func(ctx context.Context, addr string) (http.RoundTripper, error) {
+					return &dummyRoundTripper{}, nil
+				}),
+			},
+		}
+
+		newRT := func(ctx context.Context, addr string) (http.RoundTripper, error) {
+			return &dummyRoundTripper{}, nil
+		}
+
+		// Replace existing generator
+		err := k.ReplaceRoundTripGenerator("foo", newRT)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if k.roundTripperGenerators[0].name() != "foo" {
+			t.Errorf("expected name 'foo', got %q", k.roundTripperGenerators[0].name())
+		}
+
+		// Try to replace non-existent generator
+		err = k.ReplaceRoundTripGenerator("baz", newRT)
+		if !errors.Is(err, nil) && err == nil {
+			t.Errorf("expected error for non-existent generator, got nil")
+		}
 	})
 }
