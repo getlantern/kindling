@@ -26,6 +26,8 @@ var log = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{AddSource
 type Kindling interface {
 	// NewHTTPClient returns a new HTTP client that is configured to use kindling.
 	NewHTTPClient() *http.Client
+	// ReplaceRoundTripGenerator replaces an existing round tripper generator with the provided one.
+	ReplaceRoundTripGenerator(name string, rt func(ctx context.Context, addr string) (http.RoundTripper, error)) error
 }
 type roundTripperGenerator interface {
 	roundTripper(ctx context.Context, addr string) (http.RoundTripper, error)
@@ -39,6 +41,7 @@ type kindling struct {
 	logWriter              io.Writer
 	panicListener          func(string)
 	appName                string // The name of the tool using kindling, used for logging and debugging.
+	httpClient             *http.Client
 }
 
 // Make sure that kindling implements the Kindling interface.
@@ -77,12 +80,29 @@ func NewKindling(name string, options ...Option) Kindling {
 
 // NewHTTPClient implements the Kindling interface.
 func (k *kindling) NewHTTPClient() *http.Client {
+	if k.httpClient == nil {
+		k.httpClient = http.DefaultClient
+	}
 	// Create a specialized HTTP transport that concurrently races between fronted and smart dialer.
 	// All options are tried in parallel and the first one to succeed is used.
 	// If all options fail, the last error is returned.
-	return &http.Client{
-		Transport: k.newRaceTransport(),
+	k.httpClient.Transport = k.newRaceTransport()
+	return k.httpClient
+}
+
+func (k *kindling) ReplaceRoundTripGenerator(name string, rt func(ctx context.Context, addr string) (http.RoundTripper, error)) error {
+	found := -1
+	for i, v := range k.roundTripperGenerators {
+		if v.name() == name {
+			found = i
+			break
+		}
 	}
+	if found == -1 {
+		return fmt.Errorf("provided round tripper couldn't be found: %q", name)
+	}
+	k.roundTripperGenerators[found] = namedDialer(name, rt)
+	return nil
 }
 
 // WithDomainFronting is a functional option that sets up domain fronting for kindling using
