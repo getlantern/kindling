@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -98,13 +99,10 @@ func (k *kindling) NewHTTPClient() *http.Client {
 func (k *kindling) ReplaceRoundTripGenerator(name string, rt func(ctx context.Context, addr string) (http.RoundTripper, error)) error {
 	k.roundTripperGeneratorsMutex.Lock()
 	defer k.roundTripperGeneratorsMutex.Unlock()
-	found := -1
-	for i, v := range k.roundTripperGenerators {
-		if v.name() == name {
-			found = i
-			break
-		}
-	}
+
+	found := slices.IndexFunc(k.roundTripperGenerators, func(rtg roundTripperGenerator) bool {
+		return rtg.name() == name
+	})
 	if found == -1 {
 		return fmt.Errorf("round trip generator not found: %q", name)
 	}
