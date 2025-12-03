@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/Jigsaw-Code/outline-sdk/transport"
@@ -37,11 +38,12 @@ type roundTripperGenerator interface {
 //type httpDialer func(ctx context.Context, addr string) (http.RoundTripper, error)
 
 type kindling struct {
-	roundTripperGenerators []roundTripperGenerator
-	logWriter              io.Writer
-	panicListener          func(string)
-	appName                string // The name of the tool using kindling, used for logging and debugging.
-	httpClient             *http.Client
+	roundTripperGeneratorsMutex sync.Mutex
+	roundTripperGenerators      []roundTripperGenerator
+	logWriter                   io.Writer
+	panicListener               func(string)
+	appName                     string // The name of the tool using kindling, used for logging and debugging.
+	httpClient                  *http.Client
 }
 
 // Make sure that kindling implements the Kindling interface.
@@ -80,6 +82,9 @@ func NewKindling(name string, options ...Option) Kindling {
 
 // NewHTTPClient implements the Kindling interface.
 func (k *kindling) NewHTTPClient() *http.Client {
+	k.roundTripperGeneratorsMutex.Lock()
+	defer k.roundTripperGeneratorsMutex.Unlock()
+
 	if k.httpClient == nil {
 		k.httpClient = http.DefaultClient
 	}
@@ -91,6 +96,8 @@ func (k *kindling) NewHTTPClient() *http.Client {
 }
 
 func (k *kindling) ReplaceRoundTripGenerator(name string, rt func(ctx context.Context, addr string) (http.RoundTripper, error)) error {
+	k.roundTripperGeneratorsMutex.Lock()
+	defer k.roundTripperGeneratorsMutex.Unlock()
 	found := -1
 	for i, v := range k.roundTripperGenerators {
 		if v.name() == name {
