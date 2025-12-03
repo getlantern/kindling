@@ -2,7 +2,6 @@ package kindling
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -164,7 +163,7 @@ func TestKindling(t *testing.T) {
 
 		// Try to replace non-existent generator
 		err = k.ReplaceRoundTripGenerator("baz", newRT)
-		if !errors.Is(err, nil) && err == nil {
+		if err == nil {
 			t.Errorf("expected error for non-existent generator, got nil")
 		}
 	})
