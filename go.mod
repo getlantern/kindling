@@ -5,7 +5,7 @@ go 1.24.0
 require (
 	github.com/Jigsaw-Code/outline-sdk v0.0.19
 	github.com/Jigsaw-Code/outline-sdk/x v0.0.2
-	github.com/getlantern/amp v0.0.0-20250917190847-6c24707a68c7
+	github.com/getlantern/amp v0.0.0-20251211205129-c9a7700f9968
 	github.com/getlantern/dnstt v0.0.0-20250530230749-4d64f4edcf0f
 	github.com/getlantern/fronted v0.0.0-20251118000818-058df28ec727
 )
@@ -45,7 +45,7 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-stack/stack v1.8.1 // indirect
-	github.com/goccy/go-yaml v1.15.13 // indirect
+	github.com/goccy/go-yaml v1.19.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/klauspost/compress v1.17.11 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.6 // indirect
@@ -66,9 +66,9 @@ require (
 	go.opentelemetry.io/otel/trace v1.38.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.26.0 // indirect
-	golang.org/x/crypto v0.42.0 // indirect
-	golang.org/x/net v0.43.0 // indirect
-	golang.org/x/sys v0.36.0 // indirect
-	golang.org/x/text v0.29.0 // indirect
+	golang.org/x/crypto v0.45.0 // indirect
+	golang.org/x/net v0.47.0 // indirect
+	golang.org/x/sys v0.38.0 // indirect
+	golang.org/x/text v0.31.0 // indirect
 	www.bamsoftware.com/git/dnstt.git v1.20241021.0 // indirect
 )
