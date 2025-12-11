@@ -5,7 +5,7 @@ go 1.24.0
 require (
 	github.com/Jigsaw-Code/outline-sdk v0.0.19
 	github.com/Jigsaw-Code/outline-sdk/x v0.0.2
-	github.com/getlantern/amp v0.0.0-20251211205129-c9a7700f9968
+	github.com/getlantern/amp v0.0.0-20251211213807-4cbc22624b9f
 	github.com/getlantern/dnstt v0.0.0-20250530230749-4d64f4edcf0f
 	github.com/getlantern/fronted v0.0.0-20251118000818-058df28ec727
 )

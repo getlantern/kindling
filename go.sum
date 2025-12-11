@@ -26,8 +26,8 @@ github.com/envoyproxy/go-control-plane v0.9.4/go.mod h1:6rpuAdCZL397s3pYoYcLgu1m
 github.com/envoyproxy/protoc-gen-validate v0.1.0/go.mod h1:iSmxcyjqTsJpI2R4NaDN7+kN2VEUnK/pcBlmesArF7c=
 github.com/flynn/noise v1.0.1-0.20220214164934-d803f5c4b0f4 h1:6pcIWmKkQZdpPjs/pD9OLt0NwftBozNE0Nm5zMCG2C4=
 github.com/flynn/noise v1.0.1-0.20220214164934-d803f5c4b0f4/go.mod h1:xbMo+0i6+IGbYdJhF31t2eR1BIU0CYc12+BNAKwUTag=
-github.com/getlantern/amp v0.0.0-20251211205129-c9a7700f9968 h1:LKC+66hPNvnhyip+bHT8xGdwlws22EiHZ7qIbDtnLkc=
-github.com/getlantern/amp v0.0.0-20251211205129-c9a7700f9968/go.mod h1:qnMv9szb8JK3kA9W4N2FlYUMj1GkA0x7QEUEPD7tk4o=
+github.com/getlantern/amp v0.0.0-20251211213807-4cbc22624b9f h1:EaMXfKXz+zPM6Jb1EiINBy/jH7qtLd/MKc5e6pnzVts=
+github.com/getlantern/amp v0.0.0-20251211213807-4cbc22624b9f/go.mod h1:qnMv9szb8JK3kA9W4N2FlYUMj1GkA0x7QEUEPD7tk4o=
 github.com/getlantern/byteexec v0.0.0-20170405023437-4cfb26ec74f4 h1:Nqmy8i81dzokjNHpyOg24gnQBeGRF7D51m8HmBRNn0Y=
 github.com/getlantern/byteexec v0.0.0-20170405023437-4cfb26ec74f4/go.mod h1:4WCQkaCIwta0KlF9bQZA1jYqp8bzIS2PeCqjnef8nZ8=
 github.com/getlantern/context v0.0.0-20190109183933-c447772a6520/go.mod h1:L+mq6/vvYHKjCX2oez0CgEAJmbq1fbb/oNJIWQkBybY=
