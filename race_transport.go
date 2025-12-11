@@ -87,9 +87,16 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				requestCancel()
 				continue
 			}
-			log.Info("HTTP request succeeded", "name", rt.name, "status", resp.StatusCode)
 			requestCancel()
-			return resp, nil
+			// Treat all 2xx and 3xx responses as successful.
+			if resp.StatusCode < http.StatusBadRequest {
+				log.Debug("HTTP request succeeded", "name", rt.name, "status", resp.StatusCode)
+				return resp, nil
+			}
+			// Given how many weird transports we're using underneath (i.e., it may be the intermediary transport
+			// returning the response, not actually the destination server) we treat all other responses as retryable.
+			log.Error("HTTP request returned retryable status", "name", rt.name, "status", resp.StatusCode)
+			errFunc(fmt.Errorf("http status %d", resp.StatusCode))
 		case err := <-errCh:
 			return nil, err
 		case <-ctx.Done():
