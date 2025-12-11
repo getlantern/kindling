@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -65,19 +66,29 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			t.connectedRoundTripper(ctx, d, req, errFunc, rtChan)
 		}(d)
 	}
+
 	// Select up to the first response or error, or until we've hit the target number of tries or the context is canceled.
 	retryTimes := len(t.roundTripperGenerators)
 	for range retryTimes {
 		select {
 		case rt := <-rtChan:
 			// If we get a connection, try to send the request.
-			resp, err := rt.RoundTrip(cloneRequest(req, t.appName, rt.name))
+			log.Debug("Got connected RoundTripper", "name", rt.name)
+
+			// Create a request with a cloned body to avoid issues with concurrent reads and also
+			// set a lower timeout for the actual request so any single request doesn't use our whole
+			// allotted time.
+			requestCtx, requestCancel := context.WithTimeout(ctx, 10*time.Second)
+			req = cloneRequest(req, t.appName, rt.name).WithContext(requestCtx)
+			resp, err := rt.RoundTrip(req)
 			if err != nil {
 				log.Error("HTTP request failed", "name", rt.name, "err", err)
 				errFunc(err)
+				requestCancel()
 				continue
 			}
 			log.Info("HTTP request succeeded", "name", rt.name, "status", resp.StatusCode)
+			requestCancel()
 			return resp, nil
 		case err := <-errCh:
 			return nil, err
@@ -119,11 +130,16 @@ func (t *raceTransport) connectedRoundTripper(ctx context.Context, d roundTrippe
 	}
 }
 
+// Protect the http request with a mutex to avoid concurrent reads.
+var reqMutex = new(sync.Mutex)
+
 // cloneRequest creates a copy of the provided HTTP request, including its body.
 // If the body is nil or http.NoBody, it simply returns a clone without reading the body.
 // This is important because, since we're racing requests, it's possible that the body
 // has been consumed by a previous request.
 func cloneRequest(req *http.Request, app, method string) *http.Request {
+	reqMutex.Lock()
+	defer reqMutex.Unlock()
 	clonedReq := req.Clone(req.Context())
 	clonedReq.Header.Add("X-Kindling-App", app)
 	clonedReq.Header.Add("X-Kindling-Method", method)
