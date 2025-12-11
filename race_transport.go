@@ -69,6 +69,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	// Select up to the first response or error, or until we've hit the target number of tries or the context is canceled.
 	retryTimes := len(t.roundTripperGenerators)
+	var lastResponse *http.Response
 	for range retryTimes {
 		select {
 		case rt := <-rtChan:
@@ -96,12 +97,17 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			// Given how many weird transports we're using underneath (i.e., it may be the intermediary transport
 			// returning the response, not actually the destination server) we treat all other responses as retryable.
 			log.Error("HTTP request returned retryable status", "name", rt.name, "status", resp.StatusCode)
+			lastResponse = resp
 			errFunc(fmt.Errorf("http status %d", resp.StatusCode))
 		case err := <-errCh:
+			log.Error("RoundTrip error", "error", err)
 			return nil, err
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+	}
+	if lastResponse != nil {
+		return lastResponse, nil
 	}
 	return nil, errors.New("failed to get response")
 }

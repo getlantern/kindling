@@ -41,6 +41,7 @@ func TestLantern(t *testing.T) {
 	fmt.Printf("Request: %v\n", r)
 	res, err := client.Do(r)
 	if err != nil {
+		fmt.Printf("Error: %v\n", err)
 		t.Fatalf("client.Post() = %v; want nil", err)
 	}
 	defer res.Body.Close()
