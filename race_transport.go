@@ -88,7 +88,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				requestCancel()
 				continue
 			}
-			requestCancel()
+			//requestCancel()
 			// Treat all 2xx and 3xx responses as successful.
 			if resp.StatusCode < http.StatusBadRequest {
 				log.Debug("HTTP request succeeded", "name", rt.name, "status", resp.StatusCode)
