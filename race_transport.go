@@ -79,7 +79,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			// Create a request with a cloned body to avoid issues with concurrent reads and also
 			// set a lower timeout for the actual request so any single request doesn't use our whole
 			// allotted time.
-			requestCtx, requestCancel := context.WithTimeout(ctx, 10*time.Second)
+			requestCtx, requestCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			req = cloneRequest(req, t.appName, rt.name).WithContext(requestCtx)
 			resp, err := rt.RoundTrip(req)
 			if err != nil {
