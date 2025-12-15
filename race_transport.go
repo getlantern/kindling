@@ -37,10 +37,10 @@ type namedRoundTripper struct {
 	name string
 }
 
-func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t *raceTransport) RoundTrip(originalRequest *http.Request) (*http.Response, error) {
 	// Try all methods in parallel and return the first successful response.
 	// If all fail, return the last error.
-	ctx, cancel := context.WithTimeout(req.Context(), 1*time.Minute)
+	ctx, cancel := context.WithTimeout(originalRequest.Context(), timeout(originalRequest))
 
 	// Note that this will cancel the context when the first response is received,
 	// canceling any other in-flight requests that respect the context (which they should).
@@ -63,7 +63,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 					errCh <- fmt.Errorf("panic in dialer: %v", r)
 				}
 			}()
-			t.connectedRoundTripper(ctx, d, req, errFunc, rtChan)
+			t.connectedRoundTripper(ctx, d, originalRequest, errFunc, rtChan)
 		}(d)
 	}
 
@@ -76,19 +76,14 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			// If we get a connection, try to send the request.
 			log.Debug("Got connected RoundTripper", "name", rt.name)
 
-			// Create a request with a cloned body to avoid issues with concurrent reads and also
-			// set a lower timeout for the actual request so any single request doesn't use our whole
-			// allotted time.
-			requestCtx, requestCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			req = cloneRequest(req, t.appName, rt.name).WithContext(requestCtx)
+			// Create a request with a cloned body to avoid issues with concurrent reads corrupting the body.
+			req := cloneRequest(originalRequest, t.appName, rt.name)
 			resp, err := rt.RoundTrip(req)
 			if err != nil {
 				log.Error("HTTP request failed", "name", rt.name, "err", err)
 				errFunc(err)
-				requestCancel()
 				continue
 			}
-			//requestCancel()
 			// Treat all 2xx and 3xx responses as successful.
 			if resp.StatusCode < http.StatusBadRequest {
 				log.Debug("HTTP request succeeded", "name", rt.name, "status", resp.StatusCode)
@@ -172,4 +167,18 @@ func cloneRequest(req *http.Request, app, method string) *http.Request {
 	req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	clonedReq.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	return clonedReq
+}
+
+func timeout(req *http.Request) time.Duration {
+	cl := req.Header.Get("Content-Length")
+
+	// If there is no content length or it's zero, give a reduced timeout,
+	// but not too short given that some transports can take awhile to
+	// get set up.
+	if cl == "" || cl == "0" {
+		return 80 * time.Second
+	}
+
+	// For larger uploads, give more time.
+	return 3 * time.Minute
 }
