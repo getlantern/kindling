@@ -45,6 +45,8 @@ type kindling struct {
 	panicListener               func(string)
 	appName                     string // The name of the tool using kindling, used for logging and debugging.
 	httpClient                  *http.Client
+	transportTimeout            time.Duration
+	roundtripTimeout            time.Duration
 }
 
 // Make sure that kindling implements the Kindling interface.
@@ -185,9 +187,30 @@ func WithPanicListener(panicListener func(string)) Option {
 	}, priorityPanicListener) // Set the priority to 0 so that it is set before any other options.
 }
 
+// WithTransportTimeout specifies the timeout per transport used while dialing with each
+// one of the provided transports
+func WithTransportTimeout(d time.Duration) Option {
+	return newOption(func(k *kindling) {
+		log.Info("Setting transport timeout")
+		k.transportTimeout = d
+	})
+}
+
+// WithRountripTimeout specifies the roundtripper timeout.
+// The roundtripper will try all transport provided and this timeout
+// controls how much time should we wait until we cancel the connections.
+// It's also used to cancel other requests once one of the transports
+// successfully sent the request.
+func WithRountripTimeout(d time.Duration) Option {
+	return newOption(func(k *kindling) {
+		log.Info("Setting transport timeout")
+		k.roundtripTimeout = d
+	})
+}
+
 func (k *kindling) newRaceTransport() http.RoundTripper {
 	// Now create a RoundTripper that races between the available options.
-	return newRaceTransport(k.appName, k.panicListener, k.roundTripperGenerators...)
+	return newRaceTransport(k.appName, k.panicListener, k.transportTimeout, k.roundtripTimeout, k.roundTripperGenerators...)
 }
 
 func newSmartHTTPDialerFunc(logWriter io.Writer, domains ...string) (roundTripperGenerator, error) {

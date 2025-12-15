@@ -17,9 +17,16 @@ type raceTransport struct {
 	roundTripperGenerators []roundTripperGenerator
 	panicListener          func(string)
 	appName                string
+	transportTimeout       time.Duration
+	roundtripTimeout       time.Duration
 }
 
-func newRaceTransport(appName string, panicListener func(string), roundTripperGenerators ...roundTripperGenerator) http.RoundTripper {
+func newRaceTransport(
+	appName string,
+	panicListener func(string),
+	transportTimeout time.Duration,
+	roundtripTimeout time.Duration,
+	roundTripperGenerators ...roundTripperGenerator) http.RoundTripper {
 	if panicListener == nil {
 		panicListener = func(msg string) {
 			log.Error(msg)
@@ -29,6 +36,8 @@ func newRaceTransport(appName string, panicListener func(string), roundTripperGe
 		roundTripperGenerators: roundTripperGenerators,
 		panicListener:          panicListener,
 		appName:                appName,
+		transportTimeout:       transportTimeout,
+		roundtripTimeout:       roundtripTimeout,
 	}
 }
 
@@ -40,7 +49,7 @@ type namedRoundTripper struct {
 func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Try all methods in parallel and return the first successful response.
 	// If all fail, return the last error.
-	ctx, cancel := context.WithTimeout(req.Context(), 1*time.Minute)
+	ctx, cancel := context.WithTimeout(req.Context(), t.roundtripTimeout)
 
 	// Note that this will cancel the context when the first response is received,
 	// canceling any other in-flight requests that respect the context (which they should).
@@ -79,16 +88,15 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			// Create a request with a cloned body to avoid issues with concurrent reads and also
 			// set a lower timeout for the actual request so any single request doesn't use our whole
 			// allotted time.
-			requestCtx, requestCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			requestCtx, requestCancel := context.WithTimeout(context.Background(), t.transportTimeout)
+			defer requestCancel()
 			req = cloneRequest(req, t.appName, rt.name).WithContext(requestCtx)
 			resp, err := rt.RoundTrip(req)
 			if err != nil {
 				log.Error("HTTP request failed", "name", rt.name, "err", err)
 				errFunc(err)
-				requestCancel()
 				continue
 			}
-			//requestCancel()
 			// Treat all 2xx and 3xx responses as successful.
 			if resp.StatusCode < http.StatusBadRequest {
 				log.Debug("HTTP request succeeded", "name", rt.name, "status", resp.StatusCode)
