@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,6 +39,8 @@ type namedRoundTripper struct {
 	name string
 }
 
+const ampMaxContentLength = 6000
+
 func (t *raceTransport) RoundTrip(originalRequest *http.Request) (*http.Response, error) {
 	// Try all methods in parallel and return the first successful response.
 	// If all fail, return the last error.
@@ -55,6 +59,18 @@ func (t *raceTransport) RoundTrip(originalRequest *http.Request) (*http.Response
 	}
 	log.Debug(fmt.Sprintf("Dialing with %v dialers", len(t.roundTripperGenerators)))
 	for _, d := range t.roundTripperGenerators {
+		if originalRequest.Header.Get("Content-Length") != "" {
+			cl, err := strconv.Atoi(originalRequest.Header.Get("Content-Length"))
+			if err != nil {
+				slog.Debug("couldn't find request content length, setting as 0")
+				cl = 0
+			}
+
+			if cl > ampMaxContentLength && d.name() == "amp" {
+				log.Debug("skipping amp transport because it doesn't handle requests larger than 6kb", slog.Int("content-length", cl))
+				continue
+			}
+		}
 		go func(d roundTripperGenerator) {
 			// Recover from panics in the dialer.
 			defer func() {
