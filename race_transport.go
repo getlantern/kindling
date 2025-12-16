@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -59,15 +58,9 @@ func (t *raceTransport) RoundTrip(originalRequest *http.Request) (*http.Response
 	}
 	log.Debug(fmt.Sprintf("Dialing with %v dialers", len(t.roundTripperGenerators)))
 	for _, d := range t.roundTripperGenerators {
-		if originalRequest.Header.Get("Content-Length") != "" {
-			cl, err := strconv.Atoi(originalRequest.Header.Get("Content-Length"))
-			if err != nil {
-				slog.Debug("couldn't find request content length, setting as 0")
-				cl = 0
-			}
-
-			if cl > ampMaxContentLength && d.name() == "amp" {
-				log.Debug("skipping amp transport because it doesn't handle requests larger than 6kb", slog.Int("content-length", cl))
+		if originalRequest.ContentLength != -1 {
+			if originalRequest.ContentLength > ampMaxContentLength && d.name() == "amp" {
+				log.Debug("skipping amp transport because it doesn't handle requests larger than 6kb", slog.Int64("content-length", originalRequest.ContentLength))
 				continue
 			}
 		}
@@ -186,12 +179,10 @@ func cloneRequest(req *http.Request, app, method string) *http.Request {
 }
 
 func timeout(req *http.Request) time.Duration {
-	cl := req.Header.Get("Content-Length")
-
 	// If there is no content length or it's zero, give a reduced timeout,
 	// but not too short given that some transports can take awhile to
 	// get set up.
-	if cl == "" || cl == "0" {
+	if req.ContentLength == -1 || req.ContentLength == 0 {
 		return 80 * time.Second
 	}
 
