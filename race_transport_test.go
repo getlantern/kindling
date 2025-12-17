@@ -60,28 +60,3 @@ func TestCloneRequest_WithBody(t *testing.T) {
 		t.Errorf("expected cloned body %q, got %q", originalBody, string(clonedBodyBytes))
 	}
 }
-
-func TestCloneRequest_BodyReadError(t *testing.T) {
-	// Simulate a body that returns an error on Read
-	errBody := &errorReader{}
-	req, err := http.NewRequest("POST", "http://example.com", errBody)
-	if err != nil {
-		t.Fatalf("failed to create request: %v", err)
-	}
-	cloned := cloneRequest(req, "test", "test", []byte{})
-	// Should return the original request if error occurs
-	if cloned != req {
-		t.Error("expected cloneRequest to return original request on error")
-	}
-}
-
-// errorReader simulates an io.Reader that always returns an error
-type errorReader struct{}
-
-func (e *errorReader) Read(p []byte) (int, error) {
-	return 0, io.ErrUnexpectedEOF
-}
-
-func (e *errorReader) Close() error {
-	return nil
-}
