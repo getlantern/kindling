@@ -38,7 +38,15 @@ type namedRoundTripper struct {
 	name string
 }
 
-const ampMaxContentLength = 6000
+func (n namedRoundTripper) maxLength() int64 {
+	switch n.name {
+	case "amp":
+		// amp support requests with payloads lower than 6kb
+		return 6000
+	default:
+		return -1
+	}
+}
 
 func (t *raceTransport) RoundTrip(originalRequest *http.Request) (*http.Response, error) {
 	// Try all methods in parallel and return the first successful response.
@@ -58,12 +66,6 @@ func (t *raceTransport) RoundTrip(originalRequest *http.Request) (*http.Response
 	}
 	log.Debug(fmt.Sprintf("Dialing with %v dialers", len(t.roundTripperGenerators)))
 	for _, d := range t.roundTripperGenerators {
-		if originalRequest.ContentLength != -1 {
-			if originalRequest.ContentLength > ampMaxContentLength && d.name() == "amp" {
-				log.Debug("skipping amp transport because it doesn't handle requests larger than 6kb", slog.Int64("content-length", originalRequest.ContentLength))
-				continue
-			}
-		}
 		go func(d roundTripperGenerator) {
 			// Recover from panics in the dialer.
 			defer func() {
@@ -84,6 +86,16 @@ func (t *raceTransport) RoundTrip(originalRequest *http.Request) (*http.Response
 		case rt := <-rtChan:
 			// If we get a connection, try to send the request.
 			log.Debug("Got connected RoundTripper", "name", rt.name)
+
+			if originalRequest.ContentLength != -1 && rt.maxLength() != -1 &&
+				originalRequest.ContentLength > rt.maxLength() {
+				log.Debug("skipping transport because content length is bigger than maximum supported",
+					slog.Int64("request-content-length", originalRequest.ContentLength),
+					slog.Int64("max-transport-content-length", rt.maxLength()),
+					slog.String("transport", rt.name),
+				)
+				continue
+			}
 
 			// Create a request with a cloned body to avoid issues with concurrent reads corrupting the body.
 			req := cloneRequest(originalRequest, t.appName, rt.name)
