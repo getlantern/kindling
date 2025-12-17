@@ -53,24 +53,10 @@ func (t *raceTransport) RoundTrip(originalRequest *http.Request) (*http.Response
 			errCh <- fmt.Errorf("failed to connect to any dialer with last error: %v", err)
 		}
 	}
-	var bodyBytes []byte
-	var bodyErr error
-	// Read the original body into a buffer
-	if originalRequest.Body == nil || originalRequest.Body == http.NoBody {
-		bodyBytes = []byte{}
-	} else {
-		bodyBytes, bodyErr = io.ReadAll(originalRequest.Body)
-		if bodyErr != nil {
-			log.Error("Error reading body:", "error", bodyErr)
-			return nil, fmt.Errorf("Could not read request body %w", bodyErr)
-		}
-		originalRequest.Body.Close() // Close the original body
-
-		// Make sure the original request has the proper body.
-		originalRequest.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-	}
-
-	log.Debug(fmt.Sprintf("Dialing with %v dialers", len(t.transports)))
+	// Store a raw copy of the request body for request copies sent to the various
+	// transports.
+	bodyBytes := requestBodyBytes(originalRequest)
+	log.Debug(fmt.Sprintf("Dialing with %v dialers and body length %v", len(t.transports), len(bodyBytes)))
 	for _, tr := range t.transports {
 		hasLimit := tr.MaxLength() > 0
 		if hasLimit && len(bodyBytes) > tr.MaxLength() {
@@ -193,4 +179,18 @@ func timeout(req *http.Request) time.Duration {
 
 	// For larger uploads, give more time.
 	return 3 * time.Minute
+}
+
+func requestBodyBytes(req *http.Request) []byte {
+	if req.Body == nil || req.Body == http.NoBody {
+		return []byte{}
+	}
+	bodyBytes, err := io.ReadAll(req.Body)
+	if err != nil {
+		log.Error("Error reading request body:", "error", err)
+		return []byte{}
+	}
+	// Restore the original request body for future reads.
+	req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	return bodyBytes
 }
