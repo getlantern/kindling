@@ -12,7 +12,7 @@ func TestCloneRequest_NilBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
-	cloned := cloneRequest(req, "test", "test")
+	cloned := cloneRequest(req, "test", "test", []byte{})
 	if cloned == req {
 		t.Error("expected a new request, got the same pointer")
 	}
@@ -26,7 +26,7 @@ func TestCloneRequest_NoBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
-	cloned := cloneRequest(req, "test", "test")
+	cloned := cloneRequest(req, "test", "test", []byte{})
 	if cloned == req {
 		t.Error("expected a new request, got the same pointer")
 	}
@@ -41,7 +41,7 @@ func TestCloneRequest_WithBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
-	cloned := cloneRequest(req, "test", "test")
+	cloned := cloneRequest(req, "test", "test", []byte{})
 
 	// Both bodies should be readable and equal to originalBody
 	origBodyBytes, err := io.ReadAll(req.Body)
@@ -68,7 +68,7 @@ func TestCloneRequest_BodyReadError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
-	cloned := cloneRequest(req, "test", "test")
+	cloned := cloneRequest(req, "test", "test", []byte{})
 	// Should return the original request if error occurs
 	if cloned != req {
 		t.Error("expected cloneRequest to return original request on error")
