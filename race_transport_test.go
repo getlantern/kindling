@@ -1,6 +1,7 @@
 package kindling
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"strings"
@@ -46,6 +47,7 @@ func TestCloneRequest_WithBody(t *testing.T) {
 	cloned := cloneRequest(req, "test", "test", bodyBytes)
 
 	// Both bodies should be readable and equal to originalBody
+	req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	origBodyBytes, err := io.ReadAll(req.Body)
 	if err != nil {
 		t.Fatalf("failed to read original body: %v", err)
