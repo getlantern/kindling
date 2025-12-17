@@ -136,32 +136,4 @@ func TestKindling(t *testing.T) {
 			}
 		})
 	})
-
-	t.Run("kindling.ReplaceRoundTripGenerator", func(t *testing.T) {
-		newRT := func(ctx context.Context, addr string) (http.RoundTripper, error) {
-			return &dummyRoundTripper{}, nil
-		}
-		k := &kindling{
-			roundTripperGenerators: []roundTripperGenerator{
-				namedDialer("foo", newRT),
-				namedDialer("bar", newRT),
-			},
-		}
-
-		t.Run("Replacing existing generator should work", func(t *testing.T) {
-			err := k.ReplaceRoundTripGenerator("foo", newRT)
-			if err != nil {
-				t.Fatalf("expected no error, got %v", err)
-			}
-			if k.roundTripperGenerators[0].name() != "foo" {
-				t.Errorf("expected name 'foo', got %q", k.roundTripperGenerators[0].name())
-			}
-		})
-
-		t.Run("Replacing non-existent generator should return a error", func(t *testing.T) {
-			if err := k.ReplaceRoundTripGenerator("baz", newRT); err == nil {
-				t.Errorf("expected error for non-existent generator, got nil")
-			}
-		})
-	})
 }

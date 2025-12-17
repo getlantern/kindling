@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -28,8 +27,6 @@ var log = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{AddSource
 type Kindling interface {
 	// NewHTTPClient returns a new HTTP client that is configured to use kindling.
 	NewHTTPClient() *http.Client
-	// ReplaceRoundTripGenerator replaces an existing round tripper generator with the provided one.
-	ReplaceRoundTripGenerator(name string, rt func(ctx context.Context, addr string) (http.RoundTripper, error)) error
 }
 type roundTripperGenerator interface {
 	roundTripper(ctx context.Context, addr string) (http.RoundTripper, error)
@@ -94,20 +91,6 @@ func (k *kindling) NewHTTPClient() *http.Client {
 	// If all options fail, the last error is returned.
 	k.httpClient.Transport = k.newRaceTransport()
 	return k.httpClient
-}
-
-func (k *kindling) ReplaceRoundTripGenerator(name string, rt func(ctx context.Context, addr string) (http.RoundTripper, error)) error {
-	k.roundTripperGeneratorsMutex.Lock()
-	defer k.roundTripperGeneratorsMutex.Unlock()
-
-	found := slices.IndexFunc(k.roundTripperGenerators, func(rtg roundTripperGenerator) bool {
-		return rtg.name() == name
-	})
-	if found == -1 {
-		return fmt.Errorf("round trip generator not found: %q", name)
-	}
-	k.roundTripperGenerators[found] = namedDialer(name, rt)
-	return nil
 }
 
 // WithDomainFronting is a functional option that sets up domain fronting for kindling using
