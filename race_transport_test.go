@@ -41,7 +41,9 @@ func TestCloneRequest_WithBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
-	cloned := cloneRequest(req, "test", "test", []byte{})
+	bodyBytes, _ := io.ReadAll(req.Body)
+
+	cloned := cloneRequest(req, "test", "test", bodyBytes)
 
 	// Both bodies should be readable and equal to originalBody
 	origBodyBytes, err := io.ReadAll(req.Body)
