@@ -27,17 +27,16 @@ var log = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{AddSource
 type Kindling interface {
 	// NewHTTPClient returns a new HTTP client that is configured to use kindling.
 	NewHTTPClient() *http.Client
+	// ReplaceTransport replaces an existing transport RoundTripper generator with the provided one.
+	ReplaceTransport(name string, rt func(ctx context.Context, addr string) (http.RoundTripper, error)) error
 }
-type roundTripperGenerator interface {
-	roundTripper(ctx context.Context, addr string) (http.RoundTripper, error)
-	name() string
-}
+type roundTripperGenerator func(ctx context.Context, addr string) (http.RoundTripper, error)
 
 //type httpDialer func(ctx context.Context, addr string) (http.RoundTripper, error)
 
 type kindling struct {
 	roundTripperGeneratorsMutex sync.Mutex
-	roundTripperGenerators      []roundTripperGenerator
+	transports                  []Transport
 	logWriter                   io.Writer
 	panicListener               func(string)
 	appName                     string // The name of the tool using kindling, used for logging and debugging.
@@ -93,6 +92,20 @@ func (k *kindling) NewHTTPClient() *http.Client {
 	return k.httpClient
 }
 
+func (k *kindling) ReplaceTransport(name string, rt func(ctx context.Context, addr string) (http.RoundTripper, error)) error {
+	k.roundTripperGeneratorsMutex.Lock()
+	defer k.roundTripperGeneratorsMutex.Unlock()
+
+	for i, tr := range k.transports {
+		slog.Info("Checking transport", "name", tr.Name())
+		if tr.Name() == name {
+			k.transports[i] = newTransport(name, tr.MaxLength(), rt)
+			return nil
+		}
+	}
+	return fmt.Errorf("Could not find matching transport: %v", name)
+}
+
 // WithDomainFronting is a functional option that sets up domain fronting for kindling using
 // the provided fronted.Fronted instance from https://github.com/getlantern/fronted.
 func WithDomainFronting(f fronted.Fronted) Option {
@@ -102,7 +115,9 @@ func WithDomainFronting(f fronted.Fronted) Option {
 			log.Error("Fronted instance is nil")
 			return
 		}
-		k.roundTripperGenerators = append(k.roundTripperGenerators, namedDialer("fronted", f.NewConnectedRoundTripper))
+		k.transports = append(k.transports, newTransport("fronted", 0, func(ctx context.Context, addr string) (http.RoundTripper, error) {
+			return f.NewConnectedRoundTripper(ctx, addr)
+		}))
 	})
 }
 
@@ -115,7 +130,9 @@ func WithDNSTunnel(d dnstt.DNSTT) Option {
 			log.Error("DNSTT instance is nil")
 			return
 		}
-		k.roundTripperGenerators = append(k.roundTripperGenerators, namedDialer("dnstt", d.NewRoundTripper))
+		k.transports = append(k.transports, newTransport("dnstt", 0, func(ctx context.Context, addr string) (http.RoundTripper, error) {
+			return d.NewRoundTripper(ctx, addr)
+		}))
 	})
 }
 
@@ -127,7 +144,9 @@ func WithAMPCache(c amp.Client) Option {
 			log.Error("amp client is nil")
 			return
 		}
-		k.roundTripperGenerators = append(k.roundTripperGenerators, namedDialer("amp", func(context.Context, string) (http.RoundTripper, error) { return c.RoundTripper() }))
+		k.transports = append(k.transports, newTransport("amp", 6000, func(ctx context.Context, addr string) (http.RoundTripper, error) {
+			return c.RoundTripper()
+		}))
 	})
 }
 
@@ -154,7 +173,25 @@ func WithProxyless(domains ...string) Option {
 			log.Error("Failed to create smart dialer", "error", err)
 			return
 		}
-		k.roundTripperGenerators = append(k.roundTripperGenerators, smartDialer)
+		k.transports = append(k.transports, newTransport("smart", 0, smartDialer))
+	})
+}
+
+type Transport interface {
+	// NewRoundTripper creates a new http.RoundTripper that uses this transport.
+	NewRoundTripper(ctx context.Context, addr string) (http.RoundTripper, error)
+	MaxLength() int
+	Name() string
+}
+
+func WithTransport(transport Transport) Option {
+	return newOption(func(k *kindling) {
+		log.Info("Setting custom transport")
+		if transport == nil {
+			log.Error("Transport instance is nil")
+			return
+		}
+		k.transports = append(k.transports, transport)
 	})
 }
 
@@ -170,7 +207,7 @@ func WithPanicListener(panicListener func(string)) Option {
 
 func (k *kindling) newRaceTransport() http.RoundTripper {
 	// Now create a RoundTripper that races between the available options.
-	return newRaceTransport(k.appName, k.panicListener, k.roundTripperGenerators...)
+	return newRaceTransport(k.appName, k.panicListener, k.transports...)
 }
 
 func newSmartHTTPDialerFunc(logWriter io.Writer, domains ...string) (roundTripperGenerator, error) {
@@ -178,7 +215,7 @@ func newSmartHTTPDialerFunc(logWriter io.Writer, domains ...string) (roundTrippe
 	if err != nil {
 		return nil, fmt.Errorf("failed to create smart dialer: %v", err)
 	}
-	return namedDialer("smart", func(ctx context.Context, addr string) (http.RoundTripper, error) {
+	return func(ctx context.Context, addr string) (http.RoundTripper, error) {
 		streamConn, err := d.DialStream(ctx, addr)
 		if err != nil {
 			return nil, fmt.Errorf("failed to dial stream in smart dialer: %v", err)
@@ -186,7 +223,7 @@ func newSmartHTTPDialerFunc(logWriter io.Writer, domains ...string) (roundTrippe
 		return newTransportWithDialContext(func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return streamConn, nil
 		}), nil
-	}), nil
+	}, nil
 }
 
 // NewSmartHTTPTransport creates a new HTTP transport that uses the Outline smart dialer to dial to the
@@ -272,23 +309,28 @@ func (bp byPriority) Len() int           { return len(bp) }
 func (bp byPriority) Less(i, j int) bool { return bp[i].priority() < bp[j].priority() }
 func (bp byPriority) Swap(i, j int)      { bp[i], bp[j] = bp[j], bp[i] }
 
-type namedRoundTripperGenerator struct {
-	roundTripperName string
-	roundTripperFunc func(ctx context.Context, addr string) (http.RoundTripper, error)
+type namedTransport struct {
+	name      string
+	maxLength int
+	rtg       roundTripperGenerator
 }
 
-func (d *namedRoundTripperGenerator) roundTripper(ctx context.Context, addr string) (http.RoundTripper, error) {
-	log.Debug("Dialing with named dialer", "name", d.roundTripperName, "addr", addr)
-	return d.roundTripperFunc(ctx, addr)
+func (t *namedTransport) NewRoundTripper(ctx context.Context, addr string) (http.RoundTripper, error) {
+	return t.rtg(ctx, addr)
 }
 
-func (d *namedRoundTripperGenerator) name() string {
-	return d.roundTripperName
+func (t *namedTransport) MaxLength() int {
+	return t.maxLength
 }
 
-func namedDialer(name string, roundTripper func(ctx context.Context, addr string) (http.RoundTripper, error)) roundTripperGenerator {
-	return &namedRoundTripperGenerator{
-		roundTripperName: name,
-		roundTripperFunc: roundTripper,
+func (t *namedTransport) Name() string {
+	return t.name
+}
+
+func newTransport(name string, maxLength int, rtg roundTripperGenerator) Transport {
+	return &namedTransport{
+		name:      name,
+		maxLength: maxLength,
+		rtg:       rtg,
 	}
 }

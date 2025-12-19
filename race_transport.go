@@ -15,21 +15,21 @@ import (
 )
 
 type raceTransport struct {
-	roundTripperGenerators []roundTripperGenerator
-	panicListener          func(string)
-	appName                string
+	transports    []Transport
+	panicListener func(string)
+	appName       string
 }
 
-func newRaceTransport(appName string, panicListener func(string), roundTripperGenerators ...roundTripperGenerator) http.RoundTripper {
+func newRaceTransport(appName string, panicListener func(string), transports ...Transport) http.RoundTripper {
 	if panicListener == nil {
 		panicListener = func(msg string) {
 			log.Error(msg)
 		}
 	}
 	return &raceTransport{
-		roundTripperGenerators: roundTripperGenerators,
-		panicListener:          panicListener,
-		appName:                appName,
+		transports:    transports,
+		panicListener: panicListener,
+		appName:       appName,
 	}
 }
 
@@ -57,16 +57,24 @@ func (t *raceTransport) RoundTrip(originalRequest *http.Request) (*http.Response
 	// canceling any other in-flight requests that respect the context (which they should).
 	defer cancel()
 	var httpErrors = new(atomic.Int64)
-	var rtChan = make(chan *namedRoundTripper, len(t.roundTripperGenerators))
-	var errCh = make(chan error, len(t.roundTripperGenerators))
+	var rtChan = make(chan *namedRoundTripper, len(t.transports))
+	var errCh = make(chan error, len(t.transports))
 	errFunc := func(err error) {
-		if httpErrors.Add(1) == int64(len(t.roundTripperGenerators)) {
+		if httpErrors.Add(1) == int64(len(t.transports)) {
 			errCh <- fmt.Errorf("failed to connect to any dialer with last error: %v", err)
 		}
 	}
-	log.Debug(fmt.Sprintf("Dialing with %v dialers", len(t.roundTripperGenerators)))
-	for _, d := range t.roundTripperGenerators {
-		go func(d roundTripperGenerator) {
+	// Store a raw copy of the request body for request copies sent to the various
+	// transports.
+	bodyBytes := requestBodyBytes(originalRequest)
+	log.Debug(fmt.Sprintf("Dialing with %v dialers and body length %v", len(t.transports), len(bodyBytes)))
+	for _, tr := range t.transports {
+		hasLimit := tr.MaxLength() > 0
+		if hasLimit && len(bodyBytes) > tr.MaxLength() {
+			log.Debug("Skipping transport due to size limit", "name", tr.Name(), "size", len(bodyBytes), "maxLength", tr.MaxLength())
+			continue
+		}
+		go func(tr Transport) {
 			// Recover from panics in the dialer.
 			defer func() {
 				if r := recover(); r != nil {
@@ -74,12 +82,12 @@ func (t *raceTransport) RoundTrip(originalRequest *http.Request) (*http.Response
 					errCh <- fmt.Errorf("panic in dialer: %v", r)
 				}
 			}()
-			t.connectedRoundTripper(ctx, d, originalRequest, errFunc, rtChan)
-		}(d)
+			t.connectedRoundTripper(ctx, tr, originalRequest, errFunc, rtChan)
+		}(tr)
 	}
 
 	// Select up to the first response or error, or until we've hit the target number of tries or the context is canceled.
-	retryTimes := len(t.roundTripperGenerators)
+	retryTimes := len(t.transports)
 	var lastResponse *http.Response
 	for range retryTimes {
 		select {
@@ -98,7 +106,7 @@ func (t *raceTransport) RoundTrip(originalRequest *http.Request) (*http.Response
 			}
 
 			// Create a request with a cloned body to avoid issues with concurrent reads corrupting the body.
-			req := cloneRequest(originalRequest, t.appName, rt.name)
+			req := cloneRequest(originalRequest, t.appName, rt.name, bodyBytes)
 			resp, err := rt.RoundTrip(req)
 			if err != nil {
 				log.Error("HTTP request failed", "name", rt.name, "err", err)
@@ -128,7 +136,7 @@ func (t *raceTransport) RoundTrip(originalRequest *http.Request) (*http.Response
 	return nil, errors.New("failed to get response")
 }
 
-func (t *raceTransport) connectedRoundTripper(ctx context.Context, d roundTripperGenerator, originalReq *http.Request, errFunc func(error), rtChan chan *namedRoundTripper) {
+func (t *raceTransport) connectedRoundTripper(ctx context.Context, tr Transport, originalReq *http.Request, errFunc func(error), rtChan chan *namedRoundTripper) {
 	// We first create connected http.RoundTrippers prior to sending the request.
 	// With this method, we don't have to worry about the idempotency of the request
 	// because we ultimately try the connections serially in the next step.
@@ -145,7 +153,7 @@ func (t *raceTransport) connectedRoundTripper(ctx context.Context, d roundTrippe
 		}
 	}
 
-	connectedRoundTripper, err := d.roundTripper(ctx, addr)
+	connectedRoundTripper, err := tr.NewRoundTripper(ctx, addr)
 	if err != nil {
 		errFunc(err)
 	} else {
@@ -155,7 +163,7 @@ func (t *raceTransport) connectedRoundTripper(ctx context.Context, d roundTrippe
 			errFunc(ctx.Err())
 			return
 		}
-		rtChan <- &namedRoundTripper{RoundTripper: connectedRoundTripper, name: d.name()}
+		rtChan <- &namedRoundTripper{RoundTripper: connectedRoundTripper, name: tr.Name()}
 	}
 }
 
@@ -166,7 +174,7 @@ var reqMutex = new(sync.Mutex)
 // If the body is nil or http.NoBody, it simply returns a clone without reading the body.
 // This is important because, since we're racing requests, it's possible that the body
 // has been consumed by a previous request.
-func cloneRequest(req *http.Request, app, method string) *http.Request {
+func cloneRequest(req *http.Request, app, method string, bodyBytes []byte) *http.Request {
 	reqMutex.Lock()
 	defer reqMutex.Unlock()
 	clonedReq := req.Clone(req.Context())
@@ -176,16 +184,6 @@ func cloneRequest(req *http.Request, app, method string) *http.Request {
 		// If the request body is nil, we can just return a clone without reading it.
 		return clonedReq
 	}
-	// Read the original body into a buffer
-	bodyBytes, err := io.ReadAll(req.Body)
-	if err != nil {
-		log.Error("Error reading body:", "error", err)
-		return req
-	}
-	req.Body.Close() // Close the original body
-
-	// Replace the bodies with new readers from the buffer
-	req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	clonedReq.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	return clonedReq
 }
@@ -200,4 +198,18 @@ func timeout(req *http.Request) time.Duration {
 
 	// For larger uploads, give more time.
 	return 3 * time.Minute
+}
+
+func requestBodyBytes(req *http.Request) []byte {
+	if req.Body == nil || req.Body == http.NoBody {
+		return []byte{}
+	}
+	bodyBytes, err := io.ReadAll(req.Body)
+	if err != nil {
+		log.Error("Error reading request body:", "error", err)
+		return []byte{}
+	}
+	// Restore the original request body for future reads.
+	req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	return bodyBytes
 }

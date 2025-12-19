@@ -137,3 +137,91 @@ func TestKindling(t *testing.T) {
 		})
 	})
 }
+
+func TestKindling_ReplaceTransport(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Success_ReplaceExistingTransport", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a kindling instance with a transport
+		originalRT := func(ctx context.Context, addr string) (http.RoundTripper, error) {
+			return &dummyRoundTripper{}, nil
+		}
+		transport := newTransport("test-transport", 100, originalRT)
+		kindling := NewKindling("test-app", WithTransport(transport))
+
+		// Replace the transport
+		newRT := func(ctx context.Context, addr string) (http.RoundTripper, error) {
+			return &dummyRoundTripper{}, nil
+		}
+		err := kindling.ReplaceTransport("test-transport", newRT)
+		if err != nil {
+			t.Errorf("ReplaceTransport() error = %v; want nil", err)
+		}
+	})
+
+	t.Run("Error_TransportNotFound", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a kindling instance with a transport
+		originalRT := func(ctx context.Context, addr string) (http.RoundTripper, error) {
+			return &dummyRoundTripper{}, nil
+		}
+		transport := newTransport("test-transport", 100, originalRT)
+		kindling := NewKindling("test-app", WithTransport(transport))
+
+		// Try to replace a non-existent transport
+		newRT := func(ctx context.Context, addr string) (http.RoundTripper, error) {
+			return &dummyRoundTripper{}, nil
+		}
+		err := kindling.ReplaceTransport("non-existent-transport", newRT)
+		if err == nil {
+			t.Errorf("ReplaceTransport() error = nil; want error")
+		}
+		expectedError := "Could not find matching transport: non-existent-transport"
+		if err.Error() != expectedError {
+			t.Errorf("ReplaceTransport() error = %v; want %v", err.Error(), expectedError)
+		}
+	})
+
+	t.Run("Success_ReplaceMultipleTransports", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a kindling instance with multiple transports
+		rt1 := func(ctx context.Context, addr string) (http.RoundTripper, error) {
+			return &dummyRoundTripper{}, nil
+		}
+		rt2 := func(ctx context.Context, addr string) (http.RoundTripper, error) {
+			return &dummyRoundTripper{}, nil
+		}
+		transport1 := newTransport("transport-1", 100, rt1)
+		transport2 := newTransport("transport-2", 200, rt2)
+		kindling := NewKindling("test-app", WithTransport(transport1), WithTransport(transport2))
+
+		// Replace the second transport
+		newRT := func(ctx context.Context, addr string) (http.RoundTripper, error) {
+			return &dummyRoundTripper{}, nil
+		}
+		err := kindling.ReplaceTransport("transport-2", newRT)
+		if err != nil {
+			t.Errorf("ReplaceTransport() error = %v; want nil", err)
+		}
+	})
+
+	t.Run("Success_ReplaceEmptyTransportList", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a kindling instance with no transports
+		kindling := NewKindling("test-app")
+
+		// Try to replace a transport
+		newRT := func(ctx context.Context, addr string) (http.RoundTripper, error) {
+			return &dummyRoundTripper{}, nil
+		}
+		err := kindling.ReplaceTransport("any-transport", newRT)
+		if err == nil {
+			t.Errorf("ReplaceTransport() error = nil; want error")
+		}
+	})
+}

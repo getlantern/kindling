@@ -21,6 +21,17 @@ k := kindling.NewKindling(
 httpClient := k.NewHTTPClient()
 ```
 
+You can also do this by adding transports that provide a simple `Transport` interface, as in:
+
+```go
+k := kindling.NewKindling(
+	"myapp",
+    kindling.WithTransport(myCoolTransport),
+	kindling.WithTransport(myCoolerTransport),
+)
+httpClient := k.NewHTTPClient()
+```
+
 ## I want to add fuel to the fire (aka a new bootrapping technique!). What do I do?
 All you really need to do is to return an `http.RoundTripper` from whatever library you're adding. Then you simply need to add a method in `kindling.go` to allow callers to configure the new method. For DNS tunneling, for example, that method is as follows:
 
