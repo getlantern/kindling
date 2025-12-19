@@ -42,7 +42,7 @@ type Transport interface {
 }
 ```
 
-You can this use this as follows:
+You can then use this as follows:
 
 ```go
 k := kindling.NewKindling(
