@@ -21,7 +21,7 @@ k := kindling.NewKindling(
 httpClient := k.NewHTTPClient()
 ```
 
-You can also dynamically transports that provide a simple `Transport` interface:
+You can also dynamically add transports that provide a simple `Transport` interface:
 
 ```go
 // Transport provides the basic interface that any transport must implement to be used by Kindling.
