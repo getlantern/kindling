@@ -128,6 +128,11 @@ func WithDNSTunnel(d dnstt.DNSTT) Option {
 
 // WithAMPCache uses the AMP cache for making requests. It adds an 'amp' round tripper from the provided amp.Client.
 func WithAMPCache(c amp.Client) Option {
+	log.Info("Setting AMP cache")
+	if c == nil {
+		log.Error("AMP client is nil")
+		return &emptyOption{}
+	}
 	return WithTransport(newTransport("amp", 6000, func(ctx context.Context, addr string) (http.RoundTripper, error) {
 		return c.RoundTripper()
 	}))
