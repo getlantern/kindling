@@ -40,7 +40,6 @@ type kindling struct {
 	logWriter                   io.Writer
 	panicListener               func(string)
 	appName                     string // The name of the tool using kindling, used for logging and debugging.
-	httpClient                  *http.Client
 }
 
 // Make sure that kindling implements the Kindling interface.
@@ -79,17 +78,12 @@ func NewKindling(name string, options ...Option) Kindling {
 
 // NewHTTPClient implements the Kindling interface.
 func (k *kindling) NewHTTPClient() *http.Client {
-	k.roundTripperGeneratorsMutex.Lock()
-	defer k.roundTripperGeneratorsMutex.Unlock()
-
-	if k.httpClient == nil {
-		k.httpClient = http.DefaultClient
-	}
 	// Create a specialized HTTP transport that concurrently races between fronted and smart dialer.
 	// All options are tried in parallel and the first one to succeed is used.
 	// If all options fail, the last error is returned.
-	k.httpClient.Transport = k.newRaceTransport()
-	return k.httpClient
+	return &http.Client{
+		Transport: k.newRaceTransport(),
+	}
 }
 
 func (k *kindling) ReplaceTransport(name string, rt func(ctx context.Context, addr string) (http.RoundTripper, error)) error {
@@ -109,58 +103,34 @@ func (k *kindling) ReplaceTransport(name string, rt func(ctx context.Context, ad
 // WithDomainFronting is a functional option that sets up domain fronting for kindling using
 // the provided fronted.Fronted instance from https://github.com/getlantern/fronted.
 func WithDomainFronting(f fronted.Fronted) Option {
-	return newOption(func(k *kindling) {
-		log.Info("Setting domain fronting")
-		if f == nil {
-			log.Error("Fronted instance is nil")
-			return
-		}
-		k.transports = append(k.transports, newTransport("fronted", 0, func(ctx context.Context, addr string) (http.RoundTripper, error) {
-			return f.NewConnectedRoundTripper(ctx, addr)
-		}))
-	})
+	log.Info("Setting domain fronting")
+	if f == nil {
+		log.Error("Fronted instance is nil")
+		return &emptyOption{}
+	}
+	return WithTransport(newTransport("fronted", 0, func(ctx context.Context, addr string) (http.RoundTripper, error) {
+		return f.NewConnectedRoundTripper(ctx, addr)
+	}))
 }
 
 // WithDNSTunnel is a functional option that sets up a DNS tunnel for kindling using the provided
 // [dnstt.DNSTT] instance
 func WithDNSTunnel(d dnstt.DNSTT) Option {
-	return newOption(func(k *kindling) {
-		log.Info("Setting DNS tunnel")
-		if d == nil {
-			log.Error("DNSTT instance is nil")
-			return
-		}
-		k.transports = append(k.transports, newTransport("dnstt", 0, func(ctx context.Context, addr string) (http.RoundTripper, error) {
-			return d.NewRoundTripper(ctx, addr)
-		}))
-	})
+	log.Info("Setting DNS tunnel")
+	if d == nil {
+		log.Error("DNSTT instance is nil")
+		return &emptyOption{}
+	}
+	return WithTransport(newTransport("dnstt", 0, func(ctx context.Context, addr string) (http.RoundTripper, error) {
+		return d.NewRoundTripper(ctx, addr)
+	}))
 }
 
 // WithAMPCache uses the AMP cache for making requests. It adds an 'amp' round tripper from the provided amp.Client.
 func WithAMPCache(c amp.Client) Option {
-	return newOption(func(k *kindling) {
-		log.Info("Setting amp fronting")
-		if c == nil {
-			log.Error("amp client is nil")
-			return
-		}
-		k.transports = append(k.transports, newTransport("amp", 6000, func(ctx context.Context, addr string) (http.RoundTripper, error) {
-			return c.RoundTripper()
-		}))
-	})
-}
-
-// WithLogWriter is a functional option that sets the log writer for the Kindling.
-// By default, the log writer is set to os.Stdout.
-// This should be the first option to be applied to the Kindling to ensure that all logs are captured.
-func WithLogWriter(w io.Writer) Option {
-	return newOptionWithPriority(func(k *kindling) {
-		k.logWriter = w
-		log = slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{
-			AddSource: true,
-			Level:     slog.LevelDebug, // Set the log level to debug for detailed output
-		}))
-	}, priorityLogWriter)
+	return WithTransport(newTransport("amp", 6000, func(ctx context.Context, addr string) (http.RoundTripper, error) {
+		return c.RoundTripper()
+	}))
 }
 
 // WithProxyless is a functional option that enables proxyless mode for the Kindling such that
@@ -177,13 +147,37 @@ func WithProxyless(domains ...string) Option {
 	})
 }
 
+// WithLogWriter is a functional option that sets the log writer for the Kindling.
+// By default, the log writer is set to os.Stdout.
+// This should be the first option to be applied to the Kindling to ensure that all logs are captured.
+func WithLogWriter(w io.Writer) Option {
+	return newOptionWithPriority(func(k *kindling) {
+		k.logWriter = w
+		log = slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{
+			AddSource: true,
+			Level:     slog.LevelDebug, // Set the log level to debug for detailed output
+		}))
+	}, priorityLogWriter)
+}
+
+// Transport provides the basic interface that any transport must implement to be used by Kindling.
 type Transport interface {
-	// NewRoundTripper creates a new http.RoundTripper that uses this transport.
+	// NewRoundTripper creates a new http.RoundTripper that uses this transport. As much as possible
+	// the RoundTripper should be pre-connected when it is returned, as otherwise it can take too
+	// much time away from other transports. In other words, Kindling parallelizes the connection
+	// of the transports, but the actual sending of the request is done serially to avoid
+	// issues with non-idempotent requests.
 	NewRoundTripper(ctx context.Context, addr string) (http.RoundTripper, error)
+
+	// MaxLength returns the maximum length of data that can be sent using this transport, if any.
+	// A value of 0 means there is no limit.
 	MaxLength() int
+
+	// Name returns the name of the transport for logging and debugging purposes.
 	Name() string
 }
 
+// WithTransport allows users to add any transport matching the minimal Transport interface.
 func WithTransport(transport Transport) Option {
 	return newOption(func(k *kindling) {
 		log.Info("Setting custom transport")
@@ -308,6 +302,11 @@ type byPriority []Option
 func (bp byPriority) Len() int           { return len(bp) }
 func (bp byPriority) Less(i, j int) bool { return bp[i].priority() < bp[j].priority() }
 func (bp byPriority) Swap(i, j int)      { bp[i], bp[j] = bp[j], bp[i] }
+
+type emptyOption struct{}
+
+func (o *emptyOption) apply(k *kindling) {}
+func (o *emptyOption) priority() int     { return 0 }
 
 type namedTransport struct {
 	name      string

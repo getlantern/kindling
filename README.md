@@ -21,7 +21,28 @@ k := kindling.NewKindling(
 httpClient := k.NewHTTPClient()
 ```
 
-You can also do this by adding transports that provide a simple `Transport` interface, as in:
+You can also dynamically transports that provide a simple `Transport` interface:
+
+```go
+// Transport provides the basic interface that any transport must implement to be used by Kindling.
+type Transport interface {
+	// NewRoundTripper creates a new http.RoundTripper that uses this transport. As much as possible
+	// the RoundTripper should be pre-connected when it is returned, as otherwise it can take too
+	// much time away from other transports. In other words, Kindling parallelizes the connection
+	// of the transports, but the actual sending of the request is done serially to avoid
+	// issues with non-idempotent requests.
+	NewRoundTripper(ctx context.Context, addr string) (http.RoundTripper, error)
+
+	// MaxLength returns the maximum length of data that can be sent using this transport, if any.
+	// A value of 0 means there is no limit.
+	MaxLength() int
+
+	// Name returns the name of the transport for logging and debugging purposes.
+	Name() string
+}
+```
+
+You can this use this as follows:
 
 ```go
 k := kindling.NewKindling(
