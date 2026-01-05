@@ -7,7 +7,7 @@ require (
 	github.com/Jigsaw-Code/outline-sdk/x v0.0.2
 	github.com/getlantern/amp v0.0.0-20251211213807-4cbc22624b9f
 	github.com/getlantern/dnstt v0.0.0-20250530230749-4d64f4edcf0f
-	github.com/getlantern/fronted v0.0.0-20260105205233-f106c31b18c0
+	github.com/getlantern/fronted v0.0.0-20260105215156-9ae1d001d54f
 )
 
 require (
@@ -37,7 +37,7 @@ require (
 	github.com/getlantern/mtime v0.0.0-20200417132445-23682092d1f7 // indirect
 	github.com/getlantern/netx v0.0.0-20240814210628-0984f52e2d18 // indirect
 	github.com/getlantern/ops v0.0.0-20231025133620-f368ab734534 // indirect
-	github.com/getlantern/tlsdialer/v3 v3.0.3 // indirect
+	github.com/getlantern/tlsdialer/v3 v3.0.6-0.20260105215053-2a1cd54af4d5 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-stack/stack v1.8.1 // indirect
