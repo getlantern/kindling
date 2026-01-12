@@ -6,6 +6,7 @@ The techniques integrated include:
 1) [Domain fronting](https://en.wikipedia.org/wiki/Domain_fronting).
 2) [Proxyless dialing from the Outline SDK](https://github.com/Jigsaw-Code/outline-sdk/tree/main/x/smart) that generally bypasses DNS-based and SNI-based blocking (i.e. works particularly well for broadly used services with a lot of IPs that are not IP-blocked)
 3) DNS tunneling via [DNSTT](https://www.bamsoftware.com/software/dnstt/)
+4) AMP caching also via David Fifield with a [Lantern implementation](https://github.com/getlantern/amp).
 
 The idea is to continually add more techniques as they become available such that all tools have access to the most robust library possible for getting on the network quickly and reliably.
 
@@ -17,6 +18,7 @@ k := kindling.NewKindling(
     kindling.WithDomainFronting("https://raw.githubusercontent.com/getlantern/fronted/refs/heads/main/fronted.yaml.gz"),
     kindling.WithProxyless("raw.githubusercontent.com"),
     kindling.WithDNSTunnel(newDNSTT()),
+	kindling.WithAMPCache(ampClient),
 )
 httpClient := k.NewHTTPClient()
 ```
