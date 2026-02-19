@@ -8,6 +8,7 @@ require (
 	github.com/getlantern/amp v0.0.0-20251211213807-4cbc22624b9f
 	github.com/getlantern/dnstt v0.0.0-20250530230749-4d64f4edcf0f
 	github.com/getlantern/fronted v0.0.0-20260105215156-9ae1d001d54f
+	github.com/stretchr/testify v1.11.1
 )
 
 require (
@@ -27,6 +28,7 @@ require (
 	github.com/alitto/pond/v2 v2.1.5 // indirect
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/cloudflare/circl v1.5.0 // indirect
+	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/flynn/noise v1.0.1-0.20220214164934-d803f5c4b0f4 // indirect
 	github.com/getlantern/context v0.0.0-20220418194847-3d5e7a086201 // indirect
 	github.com/getlantern/errors v1.0.3 // indirect
@@ -48,6 +50,7 @@ require (
 	github.com/klauspost/reedsolomon v1.12.0 // indirect
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c // indirect
 	github.com/pkg/errors v0.9.1 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/refraction-networking/utls v1.7.1 // indirect
 	github.com/shadowsocks/go-shadowsocks2 v0.1.5 // indirect
 	github.com/templexxx/cpu v0.1.1 // indirect
