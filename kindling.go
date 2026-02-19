@@ -93,7 +93,7 @@ func (k *kindling) ReplaceTransport(name string, rt func(ctx context.Context, ad
 	for i, tr := range k.transports {
 		slog.Info("Checking transport", "name", tr.Name())
 		if tr.Name() == name {
-			k.transports[i] = newTransport(name, tr.MaxLength(), rt)
+			k.transports[i] = newTransport(name, tr.MaxLength(), tr.IsStreamable(), rt)
 			return nil
 		}
 	}
@@ -108,7 +108,7 @@ func WithDomainFronting(f fronted.Fronted) Option {
 		log.Error("Fronted instance is nil")
 		return &emptyOption{}
 	}
-	return WithTransport(newTransport("fronted", 0, func(ctx context.Context, addr string) (http.RoundTripper, error) {
+	return WithTransport(newTransport("fronted", 0, true, func(ctx context.Context, addr string) (http.RoundTripper, error) {
 		return f.NewConnectedRoundTripper(ctx, addr)
 	}))
 }
@@ -121,7 +121,7 @@ func WithDNSTunnel(d dnstt.DNSTT) Option {
 		log.Error("DNSTT instance is nil")
 		return &emptyOption{}
 	}
-	return WithTransport(newTransport("dnstt", 0, func(ctx context.Context, addr string) (http.RoundTripper, error) {
+	return WithTransport(newTransport("dnstt", 0, true, func(ctx context.Context, addr string) (http.RoundTripper, error) {
 		return d.NewRoundTripper(ctx, addr)
 	}))
 }
@@ -133,7 +133,7 @@ func WithAMPCache(c amp.Client) Option {
 		log.Error("AMP client is nil")
 		return &emptyOption{}
 	}
-	return WithTransport(newTransport("amp", 6000, func(ctx context.Context, addr string) (http.RoundTripper, error) {
+	return WithTransport(newTransport("amp", 6000, false, func(ctx context.Context, addr string) (http.RoundTripper, error) {
 		return c.RoundTripper()
 	}))
 }
@@ -148,7 +148,7 @@ func WithProxyless(domains ...string) Option {
 			log.Error("Failed to create smart dialer", "error", err)
 			return
 		}
-		k.transports = append(k.transports, newTransport("smart", 0, smartDialer))
+		k.transports = append(k.transports, newTransport("smart", 0, true, smartDialer))
 	})
 }
 
@@ -177,6 +177,9 @@ type Transport interface {
 	// MaxLength returns the maximum length of data that can be sent using this transport, if any.
 	// A value of 0 means there is no limit.
 	MaxLength() int
+
+	// IsStreamable returns if the transport support streaming
+	IsStreamable() bool
 
 	// Name returns the name of the transport for logging and debugging purposes.
 	Name() string
@@ -314,9 +317,10 @@ func (o *emptyOption) apply(k *kindling) {}
 func (o *emptyOption) priority() int     { return 0 }
 
 type namedTransport struct {
-	name      string
-	maxLength int
-	rtg       roundTripperGenerator
+	name         string
+	maxLength    int
+	isStreamable bool
+	rtg          roundTripperGenerator
 }
 
 func (t *namedTransport) NewRoundTripper(ctx context.Context, addr string) (http.RoundTripper, error) {
@@ -327,14 +331,19 @@ func (t *namedTransport) MaxLength() int {
 	return t.maxLength
 }
 
+func (t *namedTransport) IsStreamable() bool {
+	return t.isStreamable
+}
+
 func (t *namedTransport) Name() string {
 	return t.name
 }
 
-func newTransport(name string, maxLength int, rtg roundTripperGenerator) Transport {
+func newTransport(name string, maxLength int, isStreamable bool, rtg roundTripperGenerator) Transport {
 	return &namedTransport{
-		name:      name,
-		maxLength: maxLength,
-		rtg:       rtg,
+		name:         name,
+		maxLength:    maxLength,
+		isStreamable: isStreamable,
+		rtg:          rtg,
 	}
 }

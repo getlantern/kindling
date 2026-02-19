@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"sync"
@@ -56,11 +57,16 @@ func (t *raceTransport) RoundTrip(originalRequest *http.Request) (*http.Response
 	// Store a raw copy of the request body for request copies sent to the various
 	// transports.
 	bodyBytes := requestBodyBytes(originalRequest)
+	hasStreamingHeader := originalRequest.Header.Get("accept") == "text/event-stream"
 	log.Debug(fmt.Sprintf("Dialing with %v dialers and body length %v", len(t.transports), len(bodyBytes)))
 	for _, tr := range t.transports {
 		hasLimit := tr.MaxLength() > 0
 		if hasLimit && len(bodyBytes) > tr.MaxLength() {
 			log.Debug("Skipping transport due to size limit", "name", tr.Name(), "size", len(bodyBytes), "maxLength", tr.MaxLength())
+			continue
+		}
+		if hasStreamingHeader && !tr.IsStreamable() {
+			log.Debug("Skipping transport because it doesn't support streaming", slog.String("name", tr.Name()))
 			continue
 		}
 		go func(tr Transport) {

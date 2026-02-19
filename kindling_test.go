@@ -147,7 +147,7 @@ func TestKindling_ReplaceTransport(t *testing.T) {
 		originalRT := func(ctx context.Context, addr string) (http.RoundTripper, error) {
 			return &dummyRoundTripper{}, nil
 		}
-		transport := newTransport("test-transport", 100, originalRT)
+		transport := newTransport("test-transport", 100, true, originalRT)
 		kindling := NewKindling("test-app", WithTransport(transport))
 
 		// Replace the transport
@@ -167,7 +167,7 @@ func TestKindling_ReplaceTransport(t *testing.T) {
 		originalRT := func(ctx context.Context, addr string) (http.RoundTripper, error) {
 			return &dummyRoundTripper{}, nil
 		}
-		transport := newTransport("test-transport", 100, originalRT)
+		transport := newTransport("test-transport", 100, true, originalRT)
 		kindling := NewKindling("test-app", WithTransport(transport))
 
 		// Try to replace a non-existent transport
@@ -194,8 +194,8 @@ func TestKindling_ReplaceTransport(t *testing.T) {
 		rt2 := func(ctx context.Context, addr string) (http.RoundTripper, error) {
 			return &dummyRoundTripper{}, nil
 		}
-		transport1 := newTransport("transport-1", 100, rt1)
-		transport2 := newTransport("transport-2", 200, rt2)
+		transport1 := newTransport("transport-1", 100, true, rt1)
+		transport2 := newTransport("transport-2", 200, true, rt2)
 		kindling := NewKindling("test-app", WithTransport(transport1), WithTransport(transport2))
 
 		// Replace the second transport
