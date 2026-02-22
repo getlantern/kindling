@@ -35,6 +35,8 @@ github.com/getlantern/dnstt v0.0.0-20250530230749-4d64f4edcf0f h1:CbN6CaUUrXPDpZ
 github.com/getlantern/dnstt v0.0.0-20250530230749-4d64f4edcf0f/go.mod h1:LA7cwZQtgXxBJdSJDj2ZgQNo/UY3Qa7nxNxzOuMMIyw=
 github.com/getlantern/dnstt v0.0.0-20260222125454-01dcfb65c0c6 h1:HhLq9wIRPEqdl1iSNWUaM+n/Jkxg/7o6O+hDezLtStA=
 github.com/getlantern/dnstt v0.0.0-20260222125454-01dcfb65c0c6/go.mod h1:LA7cwZQtgXxBJdSJDj2ZgQNo/UY3Qa7nxNxzOuMMIyw=
+github.com/getlantern/dnstt v0.0.0-20260222134223-d7c46d78c1f4 h1:moJ39oky/8MpUJXo6l3GM9WBTx3hw3Rmv9/rFUsS6H0=
+github.com/getlantern/dnstt v0.0.0-20260222134223-d7c46d78c1f4/go.mod h1:LA7cwZQtgXxBJdSJDj2ZgQNo/UY3Qa7nxNxzOuMMIyw=
 github.com/getlantern/errors v1.0.1/go.mod h1:l+xpFBrCtDLpK9qNjxs+cHU6+BAdlBaxHqikB6Lku3A=
 github.com/getlantern/errors v1.0.3 h1:Ne4Ycj7NI1BtSyAfVeAT/DNoxz7/S2BUc3L2Ht1YSHE=
 github.com/getlantern/errors v1.0.3/go.mod h1:m8C7H1qmouvsGpwQqk/6NUpIVMpfzUPn608aBZDYV04=
