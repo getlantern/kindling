@@ -148,7 +148,7 @@ func WithDomainFronting(opts ...fronted.Option) Option {
 		log.Info("Setting domain fronting")
 		// Prepend our dialer so the caller's options can override if needed.
 		allOpts := make([]fronted.Option, 0, len(opts)+1)
-		allOpts = append(allOpts, fronted.WithDialer(k.dialContext))
+		allOpts = append(allOpts, fronted.WithDialer(fronted.DialFunc(k.dialContext)))
 		allOpts = append(allOpts, opts...)
 		f := fronted.NewFronted(allOpts...)
 		k.closers = append(k.closers, closerFunc(func() error { f.Close(); return nil }))
