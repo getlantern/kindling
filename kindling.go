@@ -46,6 +46,7 @@ type kindling struct {
 	panicListener               func(string)
 	appName                     string // The name of the tool using kindling, used for logging and debugging.
 	dialContext                 DialContextFunc
+	closersMu                   sync.Mutex
 	closers                     []io.Closer
 }
 
@@ -54,13 +55,24 @@ type closerFunc func() error
 
 func (f closerFunc) Close() error { return f() }
 
-// streamConnAdapter wraps a net.Conn as a transport.StreamConn by adding a no-op CloseWrite/CloseRead.
+// streamConnAdapter wraps a net.Conn as a transport.StreamConn by adding CloseWrite/CloseRead methods.
 type streamConnAdapter struct {
 	net.Conn
 }
 
-func (s *streamConnAdapter) CloseWrite() error { return nil }
-func (s *streamConnAdapter) CloseRead() error  { return nil }
+func (s *streamConnAdapter) CloseWrite() error {
+	if cw, ok := s.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
+}
+
+func (s *streamConnAdapter) CloseRead() error {
+	if cr, ok := s.Conn.(interface{ CloseRead() error }); ok {
+		return cr.CloseRead()
+	}
+	return nil
+}
 
 // Make sure that kindling implements the Kindling interface.
 var _ Kindling = &kindling{}
@@ -104,12 +116,15 @@ func NewKindling(name string, options ...Option) Kindling {
 
 // Close releases resources held by transports created by kindling.
 func (k *kindling) Close() error {
+	k.closersMu.Lock()
+	defer k.closersMu.Unlock()
 	var errs []error
 	for _, c := range k.closers {
 		if err := c.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
+	k.closers = nil
 	if len(errs) > 0 {
 		return fmt.Errorf("errors closing kindling resources: %v", errs)
 	}
@@ -143,6 +158,9 @@ func (k *kindling) ReplaceTransport(name string, rt func(ctx context.Context, ad
 // WithDomainFronting is a functional option that sets up domain fronting for kindling.
 // It accepts fronted.Option parameters and constructs the fronted instance internally,
 // automatically injecting kindling's dialer.
+//
+// Note: this is a breaking change from the previous API which accepted a fronted.Fronted instance.
+// Callers must now pass fronted.Option values instead (e.g., fronted.WithConfigURL(...)).
 func WithDomainFronting(opts ...fronted.Option) Option {
 	return newOption(func(k *kindling) {
 		log.Info("Setting domain fronting")
@@ -161,6 +179,12 @@ func WithDomainFronting(opts ...fronted.Option) Option {
 // WithDNSTunnel is a functional option that sets up a DNS tunnel for kindling.
 // It accepts dnstt.Option parameters and constructs the dnstt instance internally,
 // automatically injecting kindling's dialer.
+//
+// Note: this is a breaking change from the previous API which accepted a dnstt.DNSTT instance.
+// Callers must now pass dnstt.Option values instead (e.g., dnstt.WithDoH(...), dnstt.WithTunnelDomain(...)).
+//
+// If transport creation fails, the error is logged and the transport is silently omitted.
+// Kindling will still function with any remaining transports.
 func WithDNSTunnel(opts ...dnstt.Option) Option {
 	return newOption(func(k *kindling) {
 		log.Info("Setting DNS tunnel")
@@ -183,10 +207,19 @@ func WithDNSTunnel(opts ...dnstt.Option) Option {
 // WithAMPCache uses the AMP cache for making requests. It accepts an amp.Config and
 // optional amp.Option parameters, constructs the amp client internally, and automatically
 // injects kindling's dialer.
+//
+// Note: this is a breaking change from the previous API which accepted an amp.Client instance.
+// Callers must now pass an amp.Config and optional amp.Option values instead.
+//
+// If client creation fails, the error is logged and the transport is silently omitted.
+// Kindling will still function with any remaining transports.
 func WithAMPCache(cfg amp.Config, opts ...amp.Option) Option {
 	return newOption(func(k *kindling) {
 		log.Info("Setting AMP cache")
-		// Adapt DialContextFunc to amp's dialFunc (func(network, addr string) (net.Conn, error))
+		// Adapt DialContextFunc to amp's dialFunc (func(network, addr string) (net.Conn, error)).
+		// Note: amp.WithDialer does not accept a context, so we use context.Background() here.
+		// This means caller-level timeouts/cancellation won't propagate to the dial phase;
+		// however, the AMP client's own context (below) handles lifecycle cancellation.
 		ampDialer := func(network, addr string) (net.Conn, error) {
 			return k.dialContext(context.Background(), network, addr)
 		}
@@ -195,14 +228,13 @@ func WithAMPCache(cfg amp.Config, opts ...amp.Option) Option {
 		allOpts = append(allOpts, opts...)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		k.closers = append(k.closers, closerFunc(func() error { cancel(); return nil }))
-
 		c, err := amp.NewClientWithConfig(ctx, cfg, allOpts...)
 		if err != nil {
 			cancel()
 			log.Error("Failed to create AMP client", "error", err)
 			return
 		}
+		k.closers = append(k.closers, closerFunc(func() error { cancel(); return nil }))
 		k.transports = append(k.transports, newTransport("amp", 6000, false, func(ctx context.Context, addr string) (http.RoundTripper, error) {
 			return c.RoundTripper()
 		}))

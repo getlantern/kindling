@@ -246,4 +246,19 @@ func TestWithDialer(t *testing.T) {
 	if ki.dialContext == nil {
 		t.Fatal("dialContext should not be nil after WithDialer")
 	}
+	// Verify the custom dialer is actually the one stored by calling it and checking the flag.
+	_, _ = ki.dialContext(context.Background(), "tcp", "localhost:0")
+	if !called.Load() {
+		t.Fatal("custom dialer should have been called")
+	}
+}
+
+func TestWithDialerDefault(t *testing.T) {
+	t.Parallel()
+	k := NewKindling("test-app")
+	defer k.Close()
+	ki := k.(*kindling)
+	if ki.dialContext == nil {
+		t.Fatal("default dialContext should be set when WithDialer is not used")
+	}
 }
