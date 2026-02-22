@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"sync/atomic"
 	"testing"
 
 	"github.com/getlantern/fronted"
@@ -16,13 +18,13 @@ func TestNewKindling(t *testing.T) {
 	t.Run("Success", func(t *testing.T) {
 		t.Parallel()
 
-		f := fronted.NewFronted(
-			fronted.WithConfigURL("https://media.githubusercontent.com/media/getlantern/fronted/refs/heads/main/fronted.yaml.gz"))
-		kindling := NewKindling("kindling",
-			WithDomainFronting(f),
+		k := NewKindling("kindling",
+			WithDomainFronting(
+				fronted.WithConfigURL("https://media.githubusercontent.com/media/getlantern/fronted/refs/heads/main/fronted.yaml.gz")),
 			WithPanicListener(func(string) {}),
 		)
-		if kindling == nil {
+		defer k.Close()
+		if k == nil {
 			t.Errorf("NewKindling() = nil; want non-nil Kindling")
 		}
 	})
@@ -223,4 +225,25 @@ func TestKindling_ReplaceTransport(t *testing.T) {
 			t.Errorf("ReplaceTransport() error = nil; want error")
 		}
 	})
+}
+
+func TestWithDialer(t *testing.T) {
+	t.Parallel()
+	var called atomic.Bool
+	customDialer := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		called.Store(true)
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	}
+	k := NewKindling("test-app",
+		WithDialer(customDialer),
+	)
+	defer k.Close()
+	if k == nil {
+		t.Fatal("NewKindling() = nil; want non-nil Kindling")
+	}
+	// Verify the dialer was stored by checking the internal struct.
+	ki := k.(*kindling)
+	if ki.dialContext == nil {
+		t.Fatal("dialContext should not be nil after WithDialer")
+	}
 }
