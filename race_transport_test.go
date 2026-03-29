@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -332,6 +333,9 @@ func TestHostWithPort(t *testing.T) {
 		{"example.com", "http", "example.com:80"},
 		{"example.com:8080", "https", "example.com:8080"},
 		{"example.com:8080", "http", "example.com:8080"},
+		{"[::1]", "https", "[::1]:443"},
+		{"[::1]", "http", "[::1]:80"},
+		{"[::1]:8080", "https", "[::1]:8080"},
 	}
 	for _, tt := range tests {
 		got := hostWithPort(tt.host, tt.scheme)
@@ -343,7 +347,8 @@ func TestDrainRequestBody(t *testing.T) {
 	t.Parallel()
 
 	t.Run("NilBody", func(t *testing.T) {
-		req, _ := http.NewRequest("GET", "http://example.com", nil)
+		req, err := http.NewRequest("GET", "http://example.com", nil)
+		require.NoError(t, err)
 		body, err := drainRequestBody(req)
 		require.NoError(t, err)
 		assert.Nil(t, body)
@@ -351,7 +356,8 @@ func TestDrainRequestBody(t *testing.T) {
 
 	t.Run("WithContent", func(t *testing.T) {
 		content := "request body"
-		req, _ := http.NewRequest("POST", "http://example.com", strings.NewReader(content))
+		req, err := http.NewRequest("POST", "http://example.com", strings.NewReader(content))
+		require.NoError(t, err)
 		body, err := drainRequestBody(req)
 		require.NoError(t, err)
 		assert.Equal(t, content, string(body))
@@ -367,14 +373,16 @@ func TestRequestTimeout(t *testing.T) {
 	t.Parallel()
 
 	t.Run("NoContent", func(t *testing.T) {
-		req, _ := http.NewRequest("GET", "http://example.com", nil)
-		assert.Equal(t, 80*1_000_000_000, int(requestTimeout(req)))
+		req, err := http.NewRequest("GET", "http://example.com", nil)
+		require.NoError(t, err)
+		assert.Equal(t, 80*time.Second, requestTimeout(req))
 	})
 
 	t.Run("WithContent", func(t *testing.T) {
-		req, _ := http.NewRequest("POST", "http://example.com",
+		req, err := http.NewRequest("POST", "http://example.com",
 			bytes.NewReader(make([]byte, 1000)))
+		require.NoError(t, err)
 		req.ContentLength = 1000
-		assert.Equal(t, 180*1_000_000_000, int(requestTimeout(req)))
+		assert.Equal(t, 3*time.Minute, requestTimeout(req))
 	})
 }

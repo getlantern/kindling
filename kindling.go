@@ -101,6 +101,9 @@ func (k *kindling) NewHTTPClient() *http.Client {
 
 // ReplaceTransport swaps the round-tripper generator for the named transport.
 func (k *kindling) ReplaceTransport(name string, rt func(ctx context.Context, addr string) (http.RoundTripper, error)) error {
+	if rt == nil {
+		return fmt.Errorf("round-tripper generator is nil")
+	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	for i, tr := range k.transports {
@@ -124,6 +127,9 @@ func (k *kindling) ReplaceTransport(name string, rt func(ctx context.Context, ad
 // options like WithProxyless.
 func WithLogWriter(w io.Writer) Option {
 	return func(k *kindling) error {
+		if w == nil {
+			return fmt.Errorf("log writer is nil")
+		}
 		k.logWriter = w
 		k.log = slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{
 			AddSource: true,

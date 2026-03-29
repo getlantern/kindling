@@ -110,6 +110,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				"status", resp.StatusCode,
 			)
 			if lastResp != nil {
+				io.Copy(io.Discard, lastResp.Body)
 				lastResp.Body.Close()
 			}
 			lastResp = resp
@@ -185,9 +186,14 @@ func (t *raceTransport) filterTransports(req *http.Request, bodyBytes []byte) []
 }
 
 // hostWithPort ensures the host string includes a port, defaulting based on scheme.
+// Handles bracketed IPv6 literals (e.g. "[::1]") that lack a port.
 func hostWithPort(host, scheme string) string {
 	if _, _, err := net.SplitHostPort(host); err == nil {
 		return host
+	}
+	// Strip brackets from IPv6 literals so JoinHostPort doesn't double-bracket.
+	if len(host) > 1 && host[0] == '[' && host[len(host)-1] == ']' {
+		host = host[1 : len(host)-1]
 	}
 	if scheme == "https" {
 		return net.JoinHostPort(host, "443")
@@ -211,7 +217,7 @@ func cloneRequest(req *http.Request, app, method string, bodyBytes []byte) *http
 // requestTimeout returns the appropriate timeout for the request — longer
 // for uploads with content, shorter for GETs and small requests.
 func requestTimeout(req *http.Request) time.Duration {
-	if req.ContentLength > 0 {
+	if req.Body != nil && req.Body != http.NoBody && req.ContentLength != 0 {
 		return 3 * time.Minute
 	}
 	return 80 * time.Second

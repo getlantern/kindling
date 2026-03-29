@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -65,6 +66,9 @@ func TestNewKindling(t *testing.T) {
 }
 
 func TestLantern(t *testing.T) {
+	if os.Getenv("KINDLING_INTEGRATION") == "" {
+		t.Skip("skipping integration test; set KINDLING_INTEGRATION=1 to run")
+	}
 	k, err := NewKindling("kindling",
 		WithProxyless("config.getiantem.org"),
 	)
