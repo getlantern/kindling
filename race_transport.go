@@ -9,194 +9,224 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"sync"
-	"sync/atomic"
 	"time"
 )
 
+// raceTransport is an http.RoundTripper that races requests across multiple
+// transports. Connections are established concurrently, but requests are sent
+// serially in the order transports connect — avoiding issues with
+// non-idempotent requests.
 type raceTransport struct {
 	transports    []Transport
 	panicListener func(string)
 	appName       string
+	log           *slog.Logger
 }
 
-func newRaceTransport(appName string, panicListener func(string), transports ...Transport) http.RoundTripper {
-	if panicListener == nil {
-		panicListener = func(msg string) {
-			log.Error(msg)
-		}
-	}
+func newRaceTransport(appName string, log *slog.Logger, panicListener func(string), transports []Transport) *raceTransport {
 	return &raceTransport{
 		transports:    transports,
 		panicListener: panicListener,
 		appName:       appName,
+		log:           log,
 	}
 }
 
-type namedRoundTripper struct {
-	http.RoundTripper
+// connectResult holds the outcome of a single transport connection attempt.
+type connectResult struct {
+	rt   http.RoundTripper
 	name string
+	err  error
 }
 
-func (t *raceTransport) RoundTrip(originalRequest *http.Request) (*http.Response, error) {
-	// Try all methods in parallel and return the first successful response.
-	// If all fail, return the last error.
-	ctx, cancel := context.WithTimeout(originalRequest.Context(), timeout(originalRequest))
-
-	// Note that this will cancel the context when the first response is received,
-	// canceling any other in-flight requests that respect the context (which they should).
+func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx, cancel := context.WithTimeout(req.Context(), requestTimeout(req))
 	defer cancel()
-	var httpErrors = new(atomic.Int64)
-	var rtChan = make(chan *namedRoundTripper, len(t.transports))
-	var errCh = make(chan error, len(t.transports))
-	errFunc := func(err error) {
-		if httpErrors.Add(1) == int64(len(t.transports)) {
-			errCh <- fmt.Errorf("failed to connect to any dialer with last error: %v", err)
-		}
-	}
-	// Store a raw copy of the request body for request copies sent to the various
-	// transports.
-	bodyBytes := requestBodyBytes(originalRequest)
-	hasStreamingHeader := originalRequest.Header.Get("accept") == "text/event-stream"
-	log.Debug(fmt.Sprintf("Dialing with %v dialers and body length %v", len(t.transports), len(bodyBytes)))
-	for _, tr := range t.transports {
-		hasLimit := tr.MaxLength() > 0
-		if hasLimit && len(bodyBytes) > tr.MaxLength() {
-			log.Debug("Skipping transport due to size limit", "name", tr.Name(), "size", len(bodyBytes), "maxLength", tr.MaxLength())
-			continue
-		}
-		if hasStreamingHeader && !tr.IsStreamable() {
-			log.Debug("Skipping transport because it doesn't support streaming", slog.String("name", tr.Name()))
-			continue
-		}
-		go func(tr Transport) {
-			// Recover from panics in the dialer.
-			defer func() {
-				if r := recover(); r != nil {
-					t.panicListener(fmt.Sprintf("panic in dialer: %v", r))
-					errCh <- fmt.Errorf("panic in dialer: %v", r)
-				}
-			}()
-			t.connectedRoundTripper(ctx, tr, originalRequest, errFunc, rtChan)
-		}(tr)
+
+	bodyBytes, err := drainRequestBody(req)
+	if err != nil {
+		return nil, fmt.Errorf("reading request body: %w", err)
 	}
 
-	// Select up to the first response or error, or until we've hit the target number of tries or the context is canceled.
-	retryTimes := len(t.transports)
-	var lastResponse *http.Response
-	for range retryTimes {
+	eligible := t.filterTransports(req, bodyBytes)
+	if len(eligible) == 0 {
+		return nil, errors.New("no eligible transports for request")
+	}
+
+	t.log.Debug("Racing transports",
+		"count", len(eligible),
+		"bodyLength", len(bodyBytes),
+	)
+
+	// Connect all eligible transports in parallel. Each goroutine sends
+	// exactly one result, so the channel will receive len(eligible) messages.
+	results := make(chan connectResult, len(eligible))
+	addr := hostWithPort(req.URL.Host, req.URL.Scheme)
+	for _, tr := range eligible {
+		go t.connect(ctx, tr, addr, results)
+	}
+
+	// Try connected transports as they arrive. Because we consume results
+	// one at a time, requests are sent serially.
+	var lastResp *http.Response
+	var lastErr error
+
+	for remaining := len(eligible); remaining > 0; remaining-- {
 		select {
-		case rt := <-rtChan:
-			// If we get a connection, try to send the request.
-			log.Debug("Got connected RoundTripper", "name", rt.name)
-
-			// Create a request with a cloned body to avoid issues with concurrent reads corrupting the body.
-			req := cloneRequest(originalRequest, t.appName, rt.name, bodyBytes)
-			resp, err := rt.RoundTrip(req)
-			if err != nil {
-				log.Error("HTTP request failed", "name", rt.name, "err", err)
-				errFunc(err)
+		case result := <-results:
+			if result.err != nil {
+				t.log.Error("Transport connection failed",
+					"name", result.name,
+					"error", result.err,
+				)
+				lastErr = result.err
 				continue
 			}
-			// Treat all 2xx and 3xx responses as successful.
+
+			t.log.Debug("Transport connected", "name", result.name)
+			clone := cloneRequest(req, t.appName, result.name, bodyBytes)
+			resp, err := result.rt.RoundTrip(clone)
+			if err != nil {
+				t.log.Error("HTTP request failed",
+					"name", result.name,
+					"error", err,
+				)
+				lastErr = err
+				continue
+			}
+
 			if resp.StatusCode < http.StatusBadRequest {
-				log.Debug("HTTP request succeeded", "name", rt.name, "status", resp.StatusCode)
+				t.log.Debug("Request succeeded",
+					"name", result.name,
+					"status", resp.StatusCode,
+				)
 				return resp, nil
 			}
-			// Given how many weird transports we're using underneath (i.e., it may be the intermediary transport
-			// returning the response, not actually the destination server) we treat all other responses as retryable.
-			log.Error("HTTP request returned retryable status", "name", rt.name, "status", resp.StatusCode)
-			lastResponse = resp
-			errFunc(fmt.Errorf("http status %d", resp.StatusCode))
-		case err := <-errCh:
-			log.Error("RoundTrip error", "error", err)
-			return nil, err
+
+			// Retryable status — close previous failed response, keep this one
+			// in case no transport succeeds.
+			t.log.Warn("Retryable HTTP status",
+				"name", result.name,
+				"status", resp.StatusCode,
+			)
+			if lastResp != nil {
+				lastResp.Body.Close()
+			}
+			lastResp = resp
+			lastErr = fmt.Errorf("transport %s: http status %d", result.name, resp.StatusCode)
+
 		case <-ctx.Done():
+			if lastResp != nil {
+				return lastResp, nil
+			}
+			if lastErr != nil {
+				return nil, fmt.Errorf("timed out, last error: %w", lastErr)
+			}
 			return nil, ctx.Err()
 		}
 	}
-	if lastResponse != nil {
-		return lastResponse, nil
+
+	// All transports exhausted.
+	if lastResp != nil {
+		return lastResp, nil
 	}
-	return nil, errors.New("failed to get response")
+	if lastErr != nil {
+		return nil, fmt.Errorf("all transports failed: %w", lastErr)
+	}
+	return nil, errors.New("no transports produced a response")
 }
 
-func (t *raceTransport) connectedRoundTripper(ctx context.Context, tr Transport, originalReq *http.Request, errFunc func(error), rtChan chan *namedRoundTripper) {
-	// We first create connected http.RoundTrippers prior to sending the request.
-	// With this method, we don't have to worry about the idempotency of the request
-	// because we ultimately try the connections serially in the next step.
-	addr := originalReq.URL.Host
-
-	// The smart dialer requires the port to be specified, so we add it if it's
-	// missing. We can't do this in the dialer itself because the scheme
-	// is stripped by the time the dialer is called.
-	if _, _, err := net.SplitHostPort(addr); err != nil {
-		if originalReq.URL.Scheme == "https" {
-			addr = net.JoinHostPort(addr, "443")
-		} else {
-			addr = net.JoinHostPort(addr, "80")
+// connect establishes a connection using the given transport and sends the
+// result (success or failure) on the results channel. Panics are recovered.
+func (t *raceTransport) connect(ctx context.Context, tr Transport, addr string, results chan<- connectResult) {
+	defer func() {
+		if r := recover(); r != nil {
+			msg := fmt.Sprintf("panic in transport %s: %v", tr.Name(), r)
+			t.panicListener(msg)
+			results <- connectResult{name: tr.Name(), err: errors.New(msg)}
 		}
-	}
+	}()
 
-	connectedRoundTripper, err := tr.NewRoundTripper(ctx, addr)
+	rt, err := tr.NewRoundTripper(ctx, addr)
 	if err != nil {
-		errFunc(err)
-	} else {
-		if ctx.Err() != nil {
-			// context is canceled - we should not proceed with the request
-			log.Debug("Context canceled before sending request", "host", originalReq.URL.Host)
-			errFunc(ctx.Err())
-			return
+		results <- connectResult{name: tr.Name(), err: err}
+		return
+	}
+	if ctx.Err() != nil {
+		results <- connectResult{name: tr.Name(), err: ctx.Err()}
+		return
+	}
+	results <- connectResult{rt: rt, name: tr.Name()}
+}
+
+// filterTransports returns only the transports eligible for this request,
+// based on body size limits and streaming support.
+func (t *raceTransport) filterTransports(req *http.Request, bodyBytes []byte) []Transport {
+	isStreaming := req.Header.Get("Accept") == "text/event-stream"
+	eligible := make([]Transport, 0, len(t.transports))
+	for _, tr := range t.transports {
+		if tr.MaxLength() > 0 && len(bodyBytes) > tr.MaxLength() {
+			t.log.Debug("Skipping transport: body exceeds limit",
+				"name", tr.Name(),
+				"bodySize", len(bodyBytes),
+				"maxLength", tr.MaxLength(),
+			)
+			continue
 		}
-		rtChan <- &namedRoundTripper{RoundTripper: connectedRoundTripper, name: tr.Name()}
+		if isStreaming && !tr.IsStreamable() {
+			t.log.Debug("Skipping non-streamable transport",
+				"name", tr.Name(),
+			)
+			continue
+		}
+		eligible = append(eligible, tr)
 	}
+	return eligible
 }
 
-// Protect the http request with a mutex to avoid concurrent reads.
-var reqMutex = new(sync.Mutex)
+// hostWithPort ensures the host string includes a port, defaulting based on scheme.
+func hostWithPort(host, scheme string) string {
+	if _, _, err := net.SplitHostPort(host); err == nil {
+		return host
+	}
+	if scheme == "https" {
+		return net.JoinHostPort(host, "443")
+	}
+	return net.JoinHostPort(host, "80")
+}
 
-// cloneRequest creates a copy of the provided HTTP request, including its body.
-// If the body is nil or http.NoBody, it simply returns a clone without reading the body.
-// This is important because, since we're racing requests, it's possible that the body
-// has been consumed by a previous request.
+// cloneRequest creates a copy of the HTTP request with the body replaced by
+// bodyBytes and Kindling-specific tracing headers added.
 func cloneRequest(req *http.Request, app, method string, bodyBytes []byte) *http.Request {
-	reqMutex.Lock()
-	defer reqMutex.Unlock()
-	clonedReq := req.Clone(req.Context())
-	clonedReq.Header.Add("X-Kindling-App", app)
-	clonedReq.Header.Add("X-Kindling-Method", method)
-	if req.Body == http.NoBody || req.Body == nil {
-		// If the request body is nil, we can just return a clone without reading it.
-		return clonedReq
+	clone := req.Clone(req.Context())
+	clone.Header.Set("X-Kindling-App", app)
+	clone.Header.Set("X-Kindling-Method", method)
+	if req.Body != nil && req.Body != http.NoBody && len(bodyBytes) > 0 {
+		clone.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		clone.ContentLength = int64(len(bodyBytes))
 	}
-	clonedReq.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-	return clonedReq
+	return clone
 }
 
-func timeout(req *http.Request) time.Duration {
-	cl := req.Header.Get("Content-Length")
-
-	// If there is no content length or it's zero, give a reduced timeout,
-	// but not too short given that some transports can take awhile to
-	// get set up.
-	if cl == "" || cl == "0" {
-		return 80 * time.Second
+// requestTimeout returns the appropriate timeout for the request — longer
+// for uploads with content, shorter for GETs and small requests.
+func requestTimeout(req *http.Request) time.Duration {
+	if req.ContentLength > 0 {
+		return 3 * time.Minute
 	}
-
-	// For larger uploads, give more time.
-	return 3 * time.Minute
+	return 80 * time.Second
 }
 
-func requestBodyBytes(req *http.Request) []byte {
+// drainRequestBody reads the full request body into a byte slice and restores
+// it on the request. Returns nil for requests with no body.
+func drainRequestBody(req *http.Request) ([]byte, error) {
 	if req.Body == nil || req.Body == http.NoBody {
-		return []byte{}
+		return nil, nil
 	}
 	bodyBytes, err := io.ReadAll(req.Body)
 	if err != nil {
-		log.Error("Error reading request body:", "error", err)
-		return []byte{}
+		return nil, err
 	}
-	// Restore the original request body for future reads.
 	req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-	return bodyBytes
+	return bodyBytes, nil
 }
