@@ -16,7 +16,7 @@ import (
 	"github.com/Jigsaw-Code/outline-sdk/x/smart"
 	"github.com/getlantern/amp"
 	"github.com/getlantern/dnstt"
-	"github.com/getlantern/fronted"
+	"github.com/getlantern/domainfront"
 )
 
 // Kindling creates HTTP clients that race requests across multiple censorship
@@ -158,16 +158,22 @@ func WithTransport(t Transport) Option {
 	}
 }
 
-// WithDomainFronting adds domain fronting via the provided fronted.Fronted.
-func WithDomainFronting(f fronted.Fronted) Option {
+// WithDomainFronting adds domain fronting via the provided domainfront.Client.
+// The client's RoundTripper is reusable and handles its own front selection,
+// retries, and background crawling — Kindling just hands it to the race
+// transport for each request.
+func WithDomainFronting(c *domainfront.Client) Option {
 	return func(k *kindling) error {
-		if f == nil {
-			return fmt.Errorf("fronted instance is nil")
+		if c == nil {
+			return fmt.Errorf("domainfront client is nil")
 		}
+		rt := c.RoundTripper()
 		k.transports = append(k.transports, &namedTransport{
-			name:         "fronted",
+			name:         "domainfront",
 			isStreamable: true,
-			newRT:        f.NewConnectedRoundTripper,
+			newRT: func(ctx context.Context, addr string) (http.RoundTripper, error) {
+				return rt, nil
+			},
 		})
 		return nil
 	}

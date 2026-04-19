@@ -8,8 +8,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/getlantern/fronted"
+	"github.com/getlantern/domainfront"
 )
 
 func TestNewKindling(t *testing.T) {
@@ -18,10 +19,32 @@ func TestNewKindling(t *testing.T) {
 	t.Run("Success", func(t *testing.T) {
 		t.Parallel()
 
-		f := fronted.NewFronted(
-			fronted.WithConfigURL("https://media.githubusercontent.com/media/getlantern/fronted/refs/heads/main/fronted.yaml.gz"))
+		cfg := &domainfront.Config{
+			Providers: map[string]*domainfront.Provider{
+				"cloudfront": {
+					HostAliases: map[string]string{"example.com": "d1234.cloudfront.net"},
+					TestURL:     "https://d1234.cloudfront.net/ping",
+					Masquerades: []*domainfront.Masquerade{
+						{Domain: "d5678.cloudfront.net", IpAddress: "13.224.0.1"},
+					},
+				},
+				"akamai": {
+					HostAliases: map[string]string{"api.example.com": "api.dsa.akamai.example.com"},
+					TestURL:     "https://fronted-ping.dsa.akamai.example.com/ping",
+					Masquerades: []*domainfront.Masquerade{
+						{Domain: "a248.e.akamai.net", IpAddress: "23.192.228.145"},
+					},
+				},
+			},
+		}
+		c, err := domainfront.New(context.Background(), cfg)
+		if err != nil {
+			t.Fatalf("domainfront.New() error = %v", err)
+		}
+		defer c.Close()
+
 		k, err := NewKindling("kindling",
-			WithDomainFronting(f),
+			WithDomainFronting(c),
 			WithPanicListener(func(string) {}),
 		)
 		if err != nil {
@@ -90,6 +113,101 @@ func TestLantern(t *testing.T) {
 		t.Fatalf("io.ReadAll() error = %v", err)
 	}
 	fmt.Printf("Response: %d bytes, status %d\n", len(body), res.StatusCode)
+}
+
+// TestLantern_DomainFronting exercises the full Kindling → domainfront path
+// against real CDN infrastructure: it fetches the production fronted.yaml.gz
+// (which ships both CloudFront and Akamai providers), constructs a Kindling
+// with WithDomainFronting, and performs a real request through the fronted
+// transport. Passes only when a front actually works end-to-end.
+//
+// Gated on KINDLING_INTEGRATION=1 because it hits external CDN endpoints.
+func TestLantern_DomainFronting(t *testing.T) {
+	if os.Getenv("KINDLING_INTEGRATION") == "" {
+		t.Skip("skipping integration test; set KINDLING_INTEGRATION=1 to run")
+	}
+
+	const configURL = "https://raw.githubusercontent.com/getlantern/fronted/refs/heads/main/fronted.yaml.gz"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, configURL, nil)
+	if err != nil {
+		t.Fatalf("new config request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("fetch fronted.yaml.gz: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected config status: %d", resp.StatusCode)
+	}
+	cfgBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+
+	cfg, err := domainfront.ParseConfig(cfgBytes)
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+
+	if _, ok := cfg.Providers["cloudfront"]; !ok {
+		t.Fatalf("expected cloudfront provider in config")
+	}
+	if _, ok := cfg.Providers["akamai"]; !ok {
+		t.Fatalf("expected akamai provider in config")
+	}
+	t.Logf("loaded config with %d providers", len(cfg.Providers))
+
+	df, err := domainfront.New(ctx, cfg,
+		domainfront.WithConfigURL(configURL),
+	)
+	if err != nil {
+		t.Fatalf("domainfront.New: %v", err)
+	}
+	defer df.Close()
+
+	k, err := NewKindling("kindling-integration",
+		WithDomainFronting(df),
+	)
+	if err != nil {
+		t.Fatalf("NewKindling: %v", err)
+	}
+
+	// Target a host that the production fronted.yaml.gz maps to a real CDN
+	// distribution. config.getiantem.org is the canonical mapped origin that
+	// is used in production.
+	client := k.NewHTTPClient()
+	r, err := newRequestWithHeaders(ctx, http.MethodPost, "https://config.getiantem.org/proxies.yaml.gz", http.NoBody)
+	if err != nil {
+		t.Fatalf("newRequestWithHeaders: %v", err)
+	}
+	res, err := client.Do(r)
+	if err != nil {
+		t.Fatalf("client.Do via domain fronting: %v", err)
+	}
+	defer res.Body.Close()
+
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	t.Logf("fronted response: status=%d bodyLen=%d", res.StatusCode, len(body))
+
+	if res.StatusCode >= 500 {
+		t.Fatalf("origin returned server error: %d", res.StatusCode)
+	}
+	// 400/403 means the CDN itself rejected the request — domain fronting
+	// failed even though we got *some* TLS response.
+	if res.StatusCode == http.StatusBadRequest || res.StatusCode == http.StatusForbidden {
+		t.Fatalf("CDN rejected request (status %d) — domain fronting failed", res.StatusCode)
+	}
+	if len(body) == 0 {
+		t.Fatal("empty response body from fronted request")
+	}
 }
 
 const (
