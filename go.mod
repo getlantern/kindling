@@ -7,7 +7,7 @@ require (
 	github.com/Jigsaw-Code/outline-sdk/x v0.0.2
 	github.com/getlantern/amp v0.0.0-20260305201851-782bc8045e58
 	github.com/getlantern/dnstt v0.0.0-20250530230749-4d64f4edcf0f
-	github.com/getlantern/domainfront v0.0.0-20260329025228-71e634e45e25
+	github.com/getlantern/domainfront v0.0.0-20260419160203-bb71dffd0450
 	github.com/stretchr/testify v1.11.1
 )
 

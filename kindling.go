@@ -159,21 +159,19 @@ func WithTransport(t Transport) Option {
 }
 
 // WithDomainFronting adds domain fronting via the provided domainfront.Client.
-// The client's RoundTripper is reusable and handles its own front selection,
-// retries, and background crawling — Kindling just hands it to the race
-// transport for each request.
+// Each race attempt obtains a pre-connected one-shot RoundTripper via
+// NewConnectedRoundTripper, so the race transport blocks on a real TLS
+// handshake to a working front (not on a cached wrapper that "connects"
+// instantly and always wins the race).
 func WithDomainFronting(c *domainfront.Client) Option {
 	return func(k *kindling) error {
 		if c == nil {
 			return fmt.Errorf("domainfront client is nil")
 		}
-		rt := c.RoundTripper()
 		k.transports = append(k.transports, &namedTransport{
 			name:         "domainfront",
 			isStreamable: true,
-			newRT: func(ctx context.Context, addr string) (http.RoundTripper, error) {
-				return rt, nil
-			},
+			newRT:        c.NewConnectedRoundTripper,
 		})
 		return nil
 	}

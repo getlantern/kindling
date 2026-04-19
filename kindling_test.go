@@ -197,16 +197,15 @@ func TestLantern_DomainFronting(t *testing.T) {
 	}
 	t.Logf("fronted response: status=%d bodyLen=%d", res.StatusCode, len(body))
 
+	// Status-code assertions only: a successful fronted request can legitimately
+	// return an empty body (204, 304, a 405 with no body, etc). The status codes
+	// below are the ones that indicate the CDN rejected us (400/403) or the
+	// origin failed (5xx) — anything else means we tunneled through.
 	if res.StatusCode >= 500 {
 		t.Fatalf("origin returned server error: %d", res.StatusCode)
 	}
-	// 400/403 means the CDN itself rejected the request — domain fronting
-	// failed even though we got *some* TLS response.
 	if res.StatusCode == http.StatusBadRequest || res.StatusCode == http.StatusForbidden {
 		t.Fatalf("CDN rejected request (status %d) — domain fronting failed", res.StatusCode)
-	}
-	if len(body) == 0 {
-		t.Fatal("empty response body from fronted request")
 	}
 }
 
