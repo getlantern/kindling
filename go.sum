@@ -56,8 +56,8 @@ github.com/getlantern/amp v0.0.0-20260305201851-782bc8045e58 h1:3wxMKw90adxiEzsJ
 github.com/getlantern/amp v0.0.0-20260305201851-782bc8045e58/go.mod h1:p6WdG48YAz5SCUpiMSGLy616A6YghKToc63y3NP7avI=
 github.com/getlantern/dnstt v0.0.0-20250530230749-4d64f4edcf0f h1:CbN6CaUUrXPDpZCZ4wCq/3bdLhrBWqpnAiEen/t2UlY=
 github.com/getlantern/dnstt v0.0.0-20250530230749-4d64f4edcf0f/go.mod h1:LA7cwZQtgXxBJdSJDj2ZgQNo/UY3Qa7nxNxzOuMMIyw=
-github.com/getlantern/domainfront v0.0.0-20260419160203-bb71dffd0450 h1:lmahlMA+GjD6kXC3l/izDBEGKFWn3zzWe8gVdiaPHH0=
-github.com/getlantern/domainfront v0.0.0-20260419160203-bb71dffd0450/go.mod h1:nsdIvgenGUqPKnRFjkssbfxnV/WYWyC0c/t15qGym/A=
+github.com/getlantern/domainfront v0.0.0-20260419161617-0bff0b2169f4 h1:/Q9FJvKPyuXfH6tfA+C+t9/AbvGWs3Yp9iqI74FYvb4=
+github.com/getlantern/domainfront v0.0.0-20260419161617-0bff0b2169f4/go.mod h1:nsdIvgenGUqPKnRFjkssbfxnV/WYWyC0c/t15qGym/A=
 github.com/getlantern/keepcurrent v0.0.0-20260304213122-017d542145ae h1:NMq3K7h3N/usgEtUMQs8WBzvhKKOfBvHo+18pXgtpds=
 github.com/getlantern/keepcurrent v0.0.0-20260304213122-017d542145ae/go.mod h1:ag5g9aWUw2FJcX5RVRpJ9EBQBy5yJuy2WXDouIn/m4w=
 github.com/go-gl/glfw v0.0.0-20190409004039-e6da0acd62b1/go.mod h1:vR7hzQXu2zJy9AVAgeJqvqgH9Q5CA+iKCZ2gyEVpxRU=
