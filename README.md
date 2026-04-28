@@ -13,12 +13,18 @@ The idea is to continually add more techniques as they become available such tha
 ## Example
 
 ```go
-k := kindling.NewKindling(
-	"myapp",
-    kindling.WithDomainFronting("https://raw.githubusercontent.com/getlantern/fronted/refs/heads/main/fronted.yaml.gz"),
+cfg, _ := domainfront.ParseConfigFromFile("fronted.yaml.gz")
+df, _ := domainfront.New(ctx, cfg,
+    domainfront.WithConfigURL("https://raw.githubusercontent.com/getlantern/fronted/refs/heads/main/fronted.yaml.gz"),
+)
+defer df.Close()
+
+k, _ := kindling.NewKindling(
+    "myapp",
+    kindling.WithDomainFronting(df),
     kindling.WithProxyless("raw.githubusercontent.com"),
     kindling.WithDNSTunnel(newDNSTT()),
-	kindling.WithAMPCache(ampClient),
+    kindling.WithAMPCache(ampClient),
 )
 httpClient := k.NewHTTPClient()
 ```
