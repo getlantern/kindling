@@ -195,9 +195,9 @@ func TestLantern_DomainFronting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
-	t.Logf("fronted response: status=%d bodyLen=%d", res.StatusCode, len(body))
+	t.Logf("domainfront response: status=%d bodyLen=%d", res.StatusCode, len(body))
 
-	// Status-code assertions only: a successful fronted request can legitimately
+	// Status-code assertions only: a successful domainfront request can legitimately
 	// return an empty body (204, 304, a 405 with no body, etc). The status codes
 	// below are the ones that indicate the CDN rejected us (400/403) or the
 	// origin failed (5xx) — anything else means we tunneled through.

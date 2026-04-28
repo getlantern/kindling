@@ -19,6 +19,19 @@ import (
 	"github.com/getlantern/domainfront"
 )
 
+// TransportName identifies a built-in transport. Custom transports added via
+// WithTransport may use any string for their Name(); the constants below cover
+// the names assigned to the transports configured by WithDomainFronting,
+// WithDNSTunnel, WithAMPCache, and WithProxyless.
+type TransportName string
+
+const (
+	TransportDomainfront TransportName = "domainfront"
+	TransportDNSTunnel   TransportName = "dnstt"
+	TransportAMP         TransportName = "amp"
+	TransportSmart       TransportName = "smart"
+)
+
 // Kindling creates HTTP clients that race requests across multiple censorship
 // circumvention transports, returning the first successful response.
 type Kindling interface {
@@ -28,7 +41,7 @@ type Kindling interface {
 
 	// ReplaceTransport swaps the round-tripper generator for the named transport,
 	// preserving its MaxLength and IsStreamable properties.
-	ReplaceTransport(name string, rt func(ctx context.Context, addr string) (http.RoundTripper, error)) error
+	ReplaceTransport(name TransportName, rt func(ctx context.Context, addr string) (http.RoundTripper, error)) error
 }
 
 // Transport defines a censorship circumvention transport that can be used by Kindling.
@@ -100,16 +113,16 @@ func (k *kindling) NewHTTPClient() *http.Client {
 }
 
 // ReplaceTransport swaps the round-tripper generator for the named transport.
-func (k *kindling) ReplaceTransport(name string, rt func(ctx context.Context, addr string) (http.RoundTripper, error)) error {
+func (k *kindling) ReplaceTransport(name TransportName, rt func(ctx context.Context, addr string) (http.RoundTripper, error)) error {
 	if rt == nil {
 		return fmt.Errorf("round-tripper generator is nil")
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	for i, tr := range k.transports {
-		if tr.Name() == name {
+		if tr.Name() == string(name) {
 			k.transports[i] = &namedTransport{
-				name:         name,
+				name:         string(name),
 				maxLength:    tr.MaxLength(),
 				isStreamable: tr.IsStreamable(),
 				newRT:        rt,
@@ -169,7 +182,7 @@ func WithDomainFronting(c *domainfront.Client) Option {
 			return fmt.Errorf("domainfront client is nil")
 		}
 		k.transports = append(k.transports, &namedTransport{
-			name:         "domainfront",
+			name:         string(TransportDomainfront),
 			isStreamable: true,
 			newRT:        c.NewConnectedRoundTripper,
 		})
@@ -184,7 +197,7 @@ func WithDNSTunnel(d dnstt.DNSTT) Option {
 			return fmt.Errorf("dnstt instance is nil")
 		}
 		k.transports = append(k.transports, &namedTransport{
-			name:         "dnstt",
+			name:         string(TransportDNSTunnel),
 			isStreamable: true,
 			newRT:        d.NewRoundTripper,
 		})
@@ -200,7 +213,7 @@ func WithAMPCache(c amp.Client) Option {
 			return fmt.Errorf("amp client is nil")
 		}
 		k.transports = append(k.transports, &namedTransport{
-			name:      "amp",
+			name:      string(TransportAMP),
 			maxLength: 6000,
 			newRT: func(ctx context.Context, addr string) (http.RoundTripper, error) {
 				return c.RoundTripper()
@@ -219,7 +232,7 @@ func WithProxyless(domains ...string) Option {
 			return fmt.Errorf("creating smart dialer: %w", err)
 		}
 		k.transports = append(k.transports, &namedTransport{
-			name:         "smart",
+			name:         string(TransportSmart),
 			isStreamable: true,
 			newRT: func(ctx context.Context, addr string) (http.RoundTripper, error) {
 				conn, err := dialer.DialStream(ctx, addr)
