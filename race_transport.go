@@ -12,10 +12,35 @@ import (
 	"time"
 )
 
-// raceTransport is an http.RoundTripper that races requests across multiple
-// transports. Connections are established concurrently, but requests are sent
-// serially in the order transports connect — avoiding issues with
-// non-idempotent requests.
+// raceTransport is an http.RoundTripper that races *connections* across
+// multiple transports. Connections are established concurrently; the first
+// transport to connect receives the request, and the response is returned
+// to the caller.
+//
+// Retry behavior is method-aware:
+//
+//   - For idempotent methods (GET, HEAD), the original retry-across-transports
+//     behavior is preserved: transport-level errors after RoundTrip and 5xx
+//     responses fall back to the next connected transport. This handles the
+//     case where an intermediary fronting transport (rather than the origin)
+//     produced the 5xx — common when one fronting CDN is being blocked.
+//     4xx responses are NOT retried even for idempotent methods: a 4xx is
+//     the server's verdict on the request itself, so retrying won't help.
+//
+//   - For non-idempotent methods (POST/PUT/DELETE/PATCH/etc.), exactly one
+//     request is sent once any transport connects, and the response is
+//     returned regardless of status or transport error. Retrying would
+//     risk replaying server-side side effects (DB writes, registrations,
+//     billing events) — once the body has crossed the wire, the server
+//     may have processed it even if the response was lost in transit.
+//     PUT/DELETE are technically idempotent per RFC 7231 but are excluded
+//     here because the side effect may have been applied before a transient
+//     failure dropped the response, matching stdlib http.Client's stricter
+//     view of which methods are safe to replay.
+//
+// Connections that fail to establish always fall back to the next transport
+// regardless of method — no body has been transmitted on a connection that
+// never came up, so replay risk is zero.
 type raceTransport struct {
 	transports    []Transport
 	panicListener func(string)
@@ -66,8 +91,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		go t.connect(ctx, tr, addr, results)
 	}
 
-	// Try connected transports as they arrive. Because we consume results
-	// one at a time, requests are sent serially.
+	idempotent := isRetryableMethod(req.Method)
 	var lastResp *http.Response
 	var lastErr error
 
@@ -83,38 +107,51 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				continue
 			}
 
-			t.log.Debug("Transport connected", "name", result.name)
+			t.log.Debug("Transport connected, sending request", "name", result.name, "method", req.Method)
 			clone := cloneRequest(req, t.appName, result.name, bodyBytes)
 			resp, err := result.rt.RoundTrip(clone)
+
+			if !idempotent {
+				// Single-shot: return whatever happened. Retrying on a non-
+				// idempotent method risks replaying side effects.
+				return resp, err
+			}
+
 			if err != nil {
-				t.log.Error("HTTP request failed",
+				t.log.Warn("HTTP request failed on idempotent method, falling back",
 					"name", result.name,
+					"method", req.Method,
 					"error", err,
 				)
 				lastErr = err
 				continue
 			}
 
-			if resp.StatusCode < http.StatusBadRequest {
-				t.log.Debug("Request succeeded",
+			if resp.StatusCode >= 500 {
+				// 5xx on an idempotent method — the response may be from a
+				// blocked intermediary rather than the origin. Try the next
+				// transport. Hold this response in case nothing else works.
+				t.log.Warn("Retryable 5xx on idempotent method, falling back",
 					"name", result.name,
+					"method", req.Method,
 					"status", resp.StatusCode,
 				)
-				return resp, nil
+				if lastResp != nil {
+					_, _ = io.Copy(io.Discard, lastResp.Body)
+					_ = lastResp.Body.Close()
+				}
+				lastResp = resp
+				lastErr = fmt.Errorf("transport %s: http status %d", result.name, resp.StatusCode)
+				continue
 			}
 
-			// Retryable status — close previous failed response, keep this one
-			// in case no transport succeeds.
-			t.log.Warn("Retryable HTTP status",
-				"name", result.name,
-				"status", resp.StatusCode,
-			)
+			// 2xx, 3xx, or 4xx on an idempotent method: 4xx is the server's
+			// verdict on the request itself, retry won't help. Return.
 			if lastResp != nil {
-				io.Copy(io.Discard, lastResp.Body)
-				lastResp.Body.Close()
+				_, _ = io.Copy(io.Discard, lastResp.Body)
+				_ = lastResp.Body.Close()
 			}
-			lastResp = resp
-			lastErr = fmt.Errorf("transport %s: http status %d", result.name, resp.StatusCode)
+			return resp, nil
 
 		case <-ctx.Done():
 			if lastResp != nil {
@@ -135,6 +172,22 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("all transports failed: %w", lastErr)
 	}
 	return nil, errors.New("no transports produced a response")
+}
+
+// isRetryableMethod reports whether requests with this method are safe to
+// replay on a different transport after a transport-level error or 5xx
+// response. Only GET and HEAD are included: they have no side effects
+// (RFC 7231 §4.2.1 "safe" methods) and the stdlib http.Client uses the
+// same conservative position. PUT/DELETE are technically idempotent per
+// the RFC but a server may have applied the side effect before a transient
+// failure dropped the response, so replaying them is unsafe.
+func isRetryableMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, "":
+		// Empty method defaults to GET in net/http.
+		return true
+	}
+	return false
 }
 
 // connect establishes a connection using the given transport and sends the
