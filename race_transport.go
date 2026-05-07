@@ -12,12 +12,27 @@ import (
 	"time"
 )
 
+// IdempotentHeader is an opt-in marker callers can set on a request to
+// declare it idempotent regardless of HTTP method. raceTransport will
+// then apply the same retry-across-transports behavior to that request
+// that it normally reserves for GET/HEAD: transport-level errors and
+// 5xx responses fall back to the next connected transport.
+//
+// Use this for POST endpoints that are semantically read-only or
+// otherwise safe to replay (e.g., a config-fetch endpoint that returns
+// the same payload regardless of how many times it's called). The
+// header is harmless to leak to the origin — kindling doesn't strip
+// it before sending.
+//
+// Any non-empty value enables the override. Recommended value is "1".
+const IdempotentHeader = "X-Kindling-Idempotent"
+
 // raceTransport is an http.RoundTripper that races *connections* across
 // multiple transports. Connections are established concurrently; the first
 // transport to connect receives the request, and the response is returned
 // to the caller.
 //
-// Retry behavior is method-aware:
+// Retry behavior is method-aware, with a per-request opt-in override:
 //
 //   - For idempotent methods (GET, HEAD), the original retry-across-transports
 //     behavior is preserved: transport-level errors after RoundTrip and 5xx
@@ -37,6 +52,12 @@ import (
 //     here because the side effect may have been applied before a transient
 //     failure dropped the response, matching stdlib http.Client's stricter
 //     view of which methods are safe to replay.
+//
+//   - Callers that know a non-idempotent-by-method request is in fact
+//     safe to replay can opt back into the retry behavior by setting
+//     [IdempotentHeader] on the request. This is intended for POSTs that
+//     wrap idempotent reads (config fetches, status polls) where having
+//     one fronting transport blocked shouldn't cause the call to fail.
 //
 // Connections that fail to establish always fall back to the next transport
 // regardless of method — no body has been transmitted on a connection that
@@ -91,7 +112,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		go t.connect(ctx, tr, addr, results)
 	}
 
-	idempotent := isRetryableMethod(req.Method)
+	idempotent := isRetryableMethod(req.Method) || req.Header.Get(IdempotentHeader) != ""
 	var lastResp *http.Response
 	var lastErr error
 
