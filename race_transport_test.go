@@ -299,12 +299,14 @@ func TestRaceTransport_FourXX_NotRetried(t *testing.T) {
 	}))
 	defer second.Close()
 
+	// Delay the second transport's connection so the first wins the race
+	// deterministically. `connected` lets us prove the second transport's
+	// connect goroutine completed before we assert RoundTrip wasn't called.
+	delayed, connected := delayedTransport("second", second.URL, 50*time.Millisecond)
 	rt := newRaceTransport("test", testLog, func(string) {},
 		[]Transport{
 			redirectTransport("first", first.URL),
-			// Delay the second transport's connection so the first wins
-			// the race deterministically.
-			delayedTransport("second", second.URL, 50*time.Millisecond),
+			delayed,
 		},
 	)
 
@@ -318,9 +320,7 @@ func TestRaceTransport_FourXX_NotRetried(t *testing.T) {
 	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode,
 		"4xx response from the first transport must be returned to the caller")
 	assert.Equal(t, int64(1), firstHits.Load(), "first transport must see exactly one request")
-	// Wait briefly for the second transport's connect goroutine to settle —
-	// we want to prove RoundTrip wasn't called on it even after it connects.
-	time.Sleep(150 * time.Millisecond)
+	waitForConnected(t, connected)
 	assert.Equal(t, int64(0), secondHits.Load(),
 		"second transport must NOT receive the request — replaying a non-idempotent body is the bug we're guarding against")
 }
@@ -342,10 +342,11 @@ func TestRaceTransport_FiveXX_NotRetried(t *testing.T) {
 	}))
 	defer second.Close()
 
+	delayed, connected := delayedTransport("second", second.URL, 50*time.Millisecond)
 	rt := newRaceTransport("test", testLog, func(string) {},
 		[]Transport{
 			redirectTransport("first", first.URL),
-			delayedTransport("second", second.URL, 50*time.Millisecond),
+			delayed,
 		},
 	)
 
@@ -358,7 +359,7 @@ func TestRaceTransport_FiveXX_NotRetried(t *testing.T) {
 
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 	assert.Equal(t, int64(1), firstHits.Load())
-	time.Sleep(150 * time.Millisecond)
+	waitForConnected(t, connected)
 	assert.Equal(t, int64(0), secondHits.Load())
 }
 
@@ -382,10 +383,14 @@ func TestRaceTransport_FiveXX_RetriedForGET(t *testing.T) {
 	}))
 	defer second.Close()
 
+	// No explicit waitForConnected here — `secondHits == 1` is itself
+	// implicit synchronization: raceTransport must wait for the delayed
+	// transport's connectResult before issuing the second RoundTrip.
+	delayed, _ := delayedTransport("second", second.URL, 50*time.Millisecond)
 	rt := newRaceTransport("test", testLog, func(string) {},
 		[]Transport{
 			redirectTransport("first", first.URL),
-			delayedTransport("second", second.URL, 50*time.Millisecond),
+			delayed,
 		},
 	)
 
@@ -413,6 +418,7 @@ func TestRaceTransport_TransportError_RetriedForHEAD(t *testing.T) {
 	}))
 	defer second.Close()
 
+	delayed, _ := delayedTransport("second", second.URL, 50*time.Millisecond)
 	rt := newRaceTransport("test", testLog, func(string) {},
 		[]Transport{
 			&mockTransport{
@@ -421,7 +427,7 @@ func TestRaceTransport_TransportError_RetriedForHEAD(t *testing.T) {
 					return errorRoundTripper{err: errors.New("write: connection reset")}, nil
 				},
 			},
-			delayedTransport("second", second.URL, 50*time.Millisecond),
+			delayed,
 		},
 	)
 
@@ -455,10 +461,11 @@ func TestRaceTransport_FourXX_NotRetried_EvenForGET(t *testing.T) {
 	}))
 	defer second.Close()
 
+	delayed, connected := delayedTransport("second", second.URL, 50*time.Millisecond)
 	rt := newRaceTransport("test", testLog, func(string) {},
 		[]Transport{
 			redirectTransport("first", first.URL),
-			delayedTransport("second", second.URL, 50*time.Millisecond),
+			delayed,
 		},
 	)
 
@@ -471,7 +478,7 @@ func TestRaceTransport_FourXX_NotRetried_EvenForGET(t *testing.T) {
 
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	assert.Equal(t, int64(1), firstHits.Load())
-	time.Sleep(150 * time.Millisecond)
+	waitForConnected(t, connected)
 	assert.Equal(t, int64(0), secondHits.Load(),
 		"4xx on GET must not retry — the request, not the transport, is the problem")
 }
@@ -551,10 +558,19 @@ func redirectTransport(name, testServerURL string) Transport {
 	}
 }
 
-func delayedTransport(name, testServerURL string, delay time.Duration) Transport {
+// delayedTransport returns a Transport whose NewRoundTripper sleeps for
+// `delay` before returning, plus a `connected` channel that is closed once
+// NewRoundTripper has returned (regardless of outcome). Tests that assert
+// the delayed transport's request handler was NOT hit can wait on
+// `connected` to deterministically know the connect goroutine has finished
+// — at which point raceTransport has already observed the connectResult,
+// and either a RoundTrip has fired or it never will.
+func delayedTransport(name, testServerURL string, delay time.Duration) (Transport, <-chan struct{}) {
+	connected := make(chan struct{})
 	return &mockTransport{
 		name: name,
 		newRoundTripper: func(ctx context.Context, _ string) (http.RoundTripper, error) {
+			defer close(connected)
 			select {
 			case <-time.After(delay):
 				return &urlRewritingTransport{target: testServerURL}, nil
@@ -562,13 +578,30 @@ func delayedTransport(name, testServerURL string, delay time.Duration) Transport
 				return nil, ctx.Err()
 			}
 		},
+	}, connected
+}
+
+// waitForConnected blocks until ch is closed or fails the test if the
+// configured grace period elapses first. The grace period is deliberately
+// generous; a hung delayed transport is a test bug, not a race we want to
+// paper over.
+func waitForConnected(t *testing.T, ch <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("delayed transport never finished its connect attempt")
 	}
 }
 
 type urlRewritingTransport struct{ target string }
 
 func (u *urlRewritingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	parsed, err := http.NewRequest(req.Method, u.target+req.URL.Path, req.Body)
+	target := u.target + req.URL.Path
+	if req.URL.RawQuery != "" {
+		target += "?" + req.URL.RawQuery
+	}
+	parsed, err := http.NewRequestWithContext(req.Context(), req.Method, target, req.Body)
 	if err != nil {
 		return nil, err
 	}

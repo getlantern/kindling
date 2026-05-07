@@ -123,6 +123,14 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 					"method", req.Method,
 					"error", err,
 				)
+				// http.RoundTripper allows resp to be non-nil even when
+				// err is non-nil (the spec only requires resp == nil when
+				// err == nil for the success direction). Drain + close
+				// defensively so we don't leak the body / connection.
+				if resp != nil {
+					_, _ = io.Copy(io.Discard, resp.Body)
+					_ = resp.Body.Close()
+				}
 				lastErr = err
 				continue
 			}
