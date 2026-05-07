@@ -281,6 +281,334 @@ func TestRaceTransport_PanicRecovery(t *testing.T) {
 	assert.Contains(t, panicMsg, "boom")
 }
 
+// 4xx is the server's verdict on the request — replaying the request body
+// on another transport would mean a non-idempotent handler ran twice. Pin
+// the contract: 4xx returns to the caller, no second transport gets hit.
+func TestRaceTransport_FourXX_NotRetried(t *testing.T) {
+	t.Parallel()
+
+	var firstHits, secondHits atomic.Int64
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstHits.Add(1)
+		http.Error(w, "verify failed", http.StatusUnprocessableEntity)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer second.Close()
+
+	// Delay the second transport's connection so the first wins the race
+	// deterministically. `connected` lets us prove the second transport's
+	// connect goroutine completed before we assert RoundTrip wasn't called.
+	delayed, connected := delayedTransport("second", second.URL, 50*time.Millisecond)
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			redirectTransport("first", first.URL),
+			delayed,
+		},
+	)
+
+	req, err := http.NewRequest("POST", "http://example.com/peer/verify", strings.NewReader(`{}`))
+	require.NoError(t, err)
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode,
+		"4xx response from the first transport must be returned to the caller")
+	assert.Equal(t, int64(1), firstHits.Load(), "first transport must see exactly one request")
+	waitForConnected(t, connected)
+	assert.Equal(t, int64(0), secondHits.Load(),
+		"second transport must NOT receive the request — replaying a non-idempotent body is the bug we're guarding against")
+}
+
+// 5xx is also the server's verdict (or an upstream proxy's) — same
+// reasoning as 4xx. Document the contract for both.
+func TestRaceTransport_FiveXX_NotRetried(t *testing.T) {
+	t.Parallel()
+
+	var firstHits, secondHits atomic.Int64
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstHits.Add(1)
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer second.Close()
+
+	delayed, connected := delayedTransport("second", second.URL, 50*time.Millisecond)
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			redirectTransport("first", first.URL),
+			delayed,
+		},
+	)
+
+	req, err := http.NewRequest("POST", "http://example.com/peer/verify", strings.NewReader(`{}`))
+	require.NoError(t, err)
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Equal(t, int64(1), firstHits.Load())
+	waitForConnected(t, connected)
+	assert.Equal(t, int64(0), secondHits.Load())
+}
+
+// Idempotent-method exception: 5xx on a GET is allowed to fall back to
+// the next transport. Real-world driver: a domain-front returning 5xx
+// because it's being blocked, while the origin would happily respond.
+// GET is safe to replay; the server has no side effects to replay.
+func TestRaceTransport_FiveXX_RetriedForGET(t *testing.T) {
+	t.Parallel()
+
+	var firstHits, secondHits atomic.Int64
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstHits.Add(1)
+		http.Error(w, "blocked", http.StatusBadGateway)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	}))
+	defer second.Close()
+
+	// No explicit waitForConnected here — `secondHits == 1` is itself
+	// implicit synchronization: raceTransport must wait for the delayed
+	// transport's connectResult before issuing the second RoundTrip.
+	delayed, _ := delayedTransport("second", second.URL, 50*time.Millisecond)
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			redirectTransport("first", first.URL),
+			delayed,
+		},
+	)
+
+	req, err := http.NewRequest(http.MethodGet, "http://example.com/config-new", nil)
+	require.NoError(t, err)
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode,
+		"GET must fall back from 502 (first) to 200 (second)")
+	assert.Equal(t, int64(1), firstHits.Load())
+	assert.Equal(t, int64(1), secondHits.Load())
+}
+
+// Idempotent-method exception extended to HEAD.
+func TestRaceTransport_TransportError_RetriedForHEAD(t *testing.T) {
+	t.Parallel()
+
+	var secondHits atomic.Int64
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer second.Close()
+
+	delayed, _ := delayedTransport("second", second.URL, 50*time.Millisecond)
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			&mockTransport{
+				name: "rt-error",
+				newRoundTripper: func(_ context.Context, _ string) (http.RoundTripper, error) {
+					return errorRoundTripper{err: errors.New("write: connection reset")}, nil
+				},
+			},
+			delayed,
+		},
+	)
+
+	req, err := http.NewRequest(http.MethodHead, "http://example.com/health", nil)
+	require.NoError(t, err)
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, int64(1), secondHits.Load(),
+		"HEAD must fall back through a transport-level RoundTrip error")
+}
+
+// 4xx is the server's verdict on the request itself — retrying won't make
+// "your auth is wrong" or "no such resource" any more right. Even for GET,
+// short-circuit on 4xx.
+func TestRaceTransport_FourXX_NotRetried_EvenForGET(t *testing.T) {
+	t.Parallel()
+
+	var firstHits, secondHits atomic.Int64
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstHits.Add(1)
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer second.Close()
+
+	delayed, connected := delayedTransport("second", second.URL, 50*time.Millisecond)
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			redirectTransport("first", first.URL),
+			delayed,
+		},
+	)
+
+	req, err := http.NewRequest(http.MethodGet, "http://example.com/missing", nil)
+	require.NoError(t, err)
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, int64(1), firstHits.Load())
+	waitForConnected(t, connected)
+	assert.Equal(t, int64(0), secondHits.Load(),
+		"4xx on GET must not retry — the request, not the transport, is the problem")
+}
+
+func TestIsRetryableMethod(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		method string
+		want   bool
+	}{
+		{http.MethodGet, true},
+		{http.MethodHead, true},
+		{"", true}, // net/http defaults to GET
+		{http.MethodPost, false},
+		{http.MethodPut, false},
+		{http.MethodDelete, false},
+		{http.MethodPatch, false},
+		{http.MethodOptions, false},
+	}
+	for _, c := range cases {
+		assert.Equal(t, c.want, isRetryableMethod(c.method), "method=%q", c.method)
+	}
+}
+
+type errorRoundTripper struct{ err error }
+
+func (e errorRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, e.err
+}
+
+// Connection-establishment failures must still fall back to the next
+// transport — that's the whole point of racing transports. Only retries
+// after a successful connect are forbidden for non-idempotent methods.
+func TestRaceTransport_ConnectFailure_DoesFallBack(t *testing.T) {
+	t.Parallel()
+
+	var secondHits atomic.Int64
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer second.Close()
+
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			&mockTransport{
+				name: "fail-to-connect",
+				newRoundTripper: func(_ context.Context, _ string) (http.RoundTripper, error) {
+					return nil, errors.New("connect refused")
+				},
+			},
+			redirectTransport("second", second.URL),
+		},
+	)
+
+	req, err := http.NewRequest("POST", "http://example.com/anything", strings.NewReader(`{}`))
+	require.NoError(t, err)
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, int64(1), secondHits.Load(),
+		"connect failure on the first transport must fall back to the second — no body has been transmitted")
+}
+
+// redirectTransport returns a Transport whose RoundTripper rewrites the
+// request URL to point at testServerURL, so we can stand up real httptest
+// servers per transport and observe how many times each is hit.
+func redirectTransport(name, testServerURL string) Transport {
+	return &mockTransport{
+		name: name,
+		newRoundTripper: func(_ context.Context, _ string) (http.RoundTripper, error) {
+			return &urlRewritingTransport{target: testServerURL}, nil
+		},
+	}
+}
+
+// delayedTransport returns a Transport whose NewRoundTripper sleeps for
+// `delay` before returning, plus a `connected` channel that is closed once
+// NewRoundTripper has returned (regardless of outcome). Tests that assert
+// the delayed transport's request handler was NOT hit can wait on
+// `connected` to deterministically know the connect goroutine has finished
+// — at which point raceTransport has already observed the connectResult,
+// and either a RoundTrip has fired or it never will.
+func delayedTransport(name, testServerURL string, delay time.Duration) (Transport, <-chan struct{}) {
+	connected := make(chan struct{})
+	return &mockTransport{
+		name: name,
+		newRoundTripper: func(ctx context.Context, _ string) (http.RoundTripper, error) {
+			defer close(connected)
+			select {
+			case <-time.After(delay):
+				return &urlRewritingTransport{target: testServerURL}, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	}, connected
+}
+
+// waitForConnected blocks until ch is closed or fails the test if the
+// configured grace period elapses first. The grace period is deliberately
+// generous; a hung delayed transport is a test bug, not a race we want to
+// paper over.
+func waitForConnected(t *testing.T, ch <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("delayed transport never finished its connect attempt")
+	}
+}
+
+type urlRewritingTransport struct{ target string }
+
+func (u *urlRewritingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	target := u.target + req.URL.Path
+	if req.URL.RawQuery != "" {
+		target += "?" + req.URL.RawQuery
+	}
+	parsed, err := http.NewRequestWithContext(req.Context(), req.Method, target, req.Body)
+	if err != nil {
+		return nil, err
+	}
+	parsed.Header = req.Header.Clone()
+	return http.DefaultTransport.RoundTrip(parsed)
+}
+
 func TestCloneRequest_NilBody(t *testing.T) {
 	req, err := http.NewRequest("GET", "http://example.com", nil)
 	require.NoError(t, err)
