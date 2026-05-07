@@ -509,6 +509,128 @@ func (e errorRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, e.err
 }
 
+// IdempotentHeader is the opt-in escape hatch for non-idempotent-by-method
+// requests that the caller knows are safe to replay (e.g. /config-new POST,
+// which is a read-only fetch dressed up as a POST). When set, the request
+// gets the same retry-across-transports behavior as a GET.
+func TestRaceTransport_IdempotentHeader_RetriesPOSTOn5xx(t *testing.T) {
+	t.Parallel()
+
+	var firstHits, secondHits atomic.Int64
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstHits.Add(1)
+		http.Error(w, "blocked", http.StatusBadGateway)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	}))
+	defer second.Close()
+
+	delayed, _ := delayedTransport("second", second.URL, 50*time.Millisecond)
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			redirectTransport("first", first.URL),
+			delayed,
+		},
+	)
+
+	req, err := http.NewRequest(http.MethodPost, "http://example.com/config-new", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	req.Header.Set(IdempotentHeader, "1")
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode,
+		"POST tagged idempotent must fall back from 502 (first) to 200 (second)")
+	assert.Equal(t, int64(1), firstHits.Load())
+	assert.Equal(t, int64(1), secondHits.Load())
+}
+
+// Without the opt-in header, POST is single-shot — same as before. Pin
+// this so we don't accidentally widen the override to all POSTs.
+func TestRaceTransport_NoIdempotentHeader_POSTStillSingleShot(t *testing.T) {
+	t.Parallel()
+
+	var firstHits, secondHits atomic.Int64
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstHits.Add(1)
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer second.Close()
+
+	delayed, connected := delayedTransport("second", second.URL, 50*time.Millisecond)
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			redirectTransport("first", first.URL),
+			delayed,
+		},
+	)
+
+	req, err := http.NewRequest(http.MethodPost, "http://example.com/peer/verify", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	// Note: IdempotentHeader is intentionally NOT set.
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Equal(t, int64(1), firstHits.Load())
+	waitForConnected(t, connected)
+	assert.Equal(t, int64(0), secondHits.Load(),
+		"POST without IdempotentHeader must remain single-shot")
+}
+
+// Empty-string header value should NOT enable the override. Treat the
+// header strictly as "non-empty value = idempotent" so accidentally
+// setting an empty string doesn't silently re-enable replay.
+func TestRaceTransport_EmptyIdempotentHeader_POSTStillSingleShot(t *testing.T) {
+	t.Parallel()
+
+	var firstHits, secondHits atomic.Int64
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstHits.Add(1)
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer second.Close()
+
+	delayed, connected := delayedTransport("second", second.URL, 50*time.Millisecond)
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			redirectTransport("first", first.URL),
+			delayed,
+		},
+	)
+
+	req, err := http.NewRequest(http.MethodPost, "http://example.com/peer/verify", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	req.Header.Set(IdempotentHeader, "")
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Equal(t, int64(1), firstHits.Load())
+	waitForConnected(t, connected)
+	assert.Equal(t, int64(0), secondHits.Load())
+}
+
 // Connection-establishment failures must still fall back to the next
 // transport — that's the whole point of racing transports. Only retries
 // after a successful connect are forbidden for non-idempotent methods.
