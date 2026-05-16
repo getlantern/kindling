@@ -81,6 +81,9 @@ type kindling struct {
 	// on its default TCPDialer{} / UDPDialer{}.
 	streamDialer transport.StreamDialer
 	packetDialer transport.PacketDialer
+	// smartDialerConfig overrides the embedded smart_dialer_config.yml.
+	// nil falls back to the embedded default.
+	smartDialerConfig []byte
 	// deferred holds option work that must run after every other option
 	// has had a chance to mutate the struct. Used by WithProxyless so it
 	// reads streamDialer/packetDialer after WithStreamDialer /
@@ -206,6 +209,24 @@ func WithPacketDialer(d transport.PacketDialer) Option {
 	}
 }
 
+// WithSmartDialerConfig replaces the embedded smart_dialer_config.yml that
+// drives the Outline SDK strategy probe. Callers that pass a custom
+// StreamDialer typically need this too: the default config lists
+// `system: {}` first under DNS, which makes the strategy fall back to the
+// OS resolver — and outline-sdk then requires the base StreamDialer to be
+// exactly *transport.TCPDialer, rejecting any other type. Supplying a
+// config that omits `system: {}` (using DoH/DoT entries instead) routes
+// every probe through the custom dialer.
+func WithSmartDialerConfig(cfg []byte) Option {
+	return func(k *kindling) error {
+		if len(cfg) == 0 {
+			return fmt.Errorf("smart dialer config is empty")
+		}
+		k.smartDialerConfig = cfg
+		return nil
+	}
+}
+
 // WithTransport adds a custom Transport implementation.
 func WithTransport(t Transport) Option {
 	return func(k *kindling) error {
@@ -277,7 +298,7 @@ func WithAMPCache(c amp.Client) Option {
 func WithProxyless(domains ...string) Option {
 	return func(k *kindling) error {
 		k.deferred = append(k.deferred, func() error {
-			dialer, err := newSmartDialerFn(k.logWriter, k.streamDialer, k.packetDialer, domains...)
+			dialer, err := newSmartDialerFn(k.logWriter, k.smartDialerConfig, k.streamDialer, k.packetDialer, domains...)
 			if err != nil {
 				return fmt.Errorf("creating smart dialer: %w", err)
 			}
@@ -325,18 +346,25 @@ var configFS embed.FS
 // probe during NewKindling's deferred phase.
 var newSmartDialerFn = newSmartDialer
 
-// newSmartDialer constructs an Outline-SDK smart dialer. stream / packet are
-// the base dialers the strategy probes against; either may be nil, in which
-// case the stdlib-backed transport.TCPDialer / transport.UDPDialer are used.
+// newSmartDialer constructs an Outline-SDK smart dialer. config is the YAML
+// strategy spec; nil reads the embedded default. stream / packet are the
+// base dialers the strategy probes against; either may be nil, in which
+// case the stdlib-backed transport.TCPDialer / transport.UDPDialer are
+// used.
 func newSmartDialer(
 	logWriter io.Writer,
+	config []byte,
 	stream transport.StreamDialer,
 	packet transport.PacketDialer,
 	domains ...string,
 ) (transport.StreamDialer, error) {
-	configBytes, err := configFS.ReadFile("smart_dialer_config.yml")
-	if err != nil {
-		return nil, fmt.Errorf("reading smart dialer config: %w", err)
+	configBytes := config
+	if configBytes == nil {
+		var err error
+		configBytes, err = configFS.ReadFile("smart_dialer_config.yml")
+		if err != nil {
+			return nil, fmt.Errorf("reading smart dialer config: %w", err)
+		}
 	}
 	if stream == nil {
 		stream = &transport.TCPDialer{}
@@ -388,7 +416,27 @@ func NewSmartHTTPTransportWithDialer(
 	packet transport.PacketDialer,
 	domains ...string,
 ) (*http.Transport, error) {
-	dialer, err := newSmartDialerFn(logWriter, stream, packet, domains...)
+	return NewSmartHTTPTransportWithConfig(logWriter, nil, stream, packet, domains...)
+}
+
+// NewSmartHTTPTransportWithConfig is NewSmartHTTPTransportWithDialer plus an
+// override for the YAML strategy config. nil reads the embedded default,
+// which lists `system: {}` first under DNS — incompatible with non-default
+// stream dialers, since outline-sdk's smart strategy then requires the base
+// dialer to be *transport.TCPDialer. Pass a config that omits `system: {}`
+// (using DoH/DoT entries) to route every probe through your stream dialer.
+// A non-nil but empty config is rejected, matching WithSmartDialerConfig.
+func NewSmartHTTPTransportWithConfig(
+	logWriter io.Writer,
+	config []byte,
+	stream transport.StreamDialer,
+	packet transport.PacketDialer,
+	domains ...string,
+) (*http.Transport, error) {
+	if config != nil && len(config) == 0 {
+		return nil, fmt.Errorf("smart dialer config is empty")
+	}
+	dialer, err := newSmartDialerFn(logWriter, config, stream, packet, domains...)
 	if err != nil {
 		return nil, err
 	}
