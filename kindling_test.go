@@ -118,7 +118,7 @@ func TestNewKindling(t *testing.T) {
 				var gotStream transport.StreamDialer
 				var gotPacket transport.PacketDialer
 				orig := newSmartDialerFn
-				newSmartDialerFn = func(_ io.Writer, s transport.StreamDialer, p transport.PacketDialer, _ ...string) (transport.StreamDialer, error) {
+				newSmartDialerFn = func(_ io.Writer, _ []byte, s transport.StreamDialer, p transport.PacketDialer, _ ...string) (transport.StreamDialer, error) {
 					gotStream, gotPacket = s, p
 					return stubStreamDialer{}, nil
 				}
@@ -139,6 +139,54 @@ func TestNewKindling(t *testing.T) {
 					t.Errorf("transports = %v; want one %q", ki.transports, TransportSmart)
 				}
 			})
+		}
+	})
+
+	// WithSmartDialerConfig must reach newSmartDialerFn whether it was set
+	// before or after WithProxyless. Guards the deferred-construction path
+	// from regressing.
+	t.Run("ProxylessConfigOrderIndependent", func(t *testing.T) {
+		customCfg := []byte("dns: []\ntls: []\n")
+		cases := []struct {
+			name string
+			opts []Option
+		}{
+			{"config-before-proxyless", []Option{
+				WithSmartDialerConfig(customCfg),
+				WithProxyless("example.com"),
+			}},
+			{"proxyless-before-config", []Option{
+				WithProxyless("example.com"),
+				WithSmartDialerConfig(customCfg),
+			}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				var gotCfg []byte
+				orig := newSmartDialerFn
+				newSmartDialerFn = func(_ io.Writer, cfg []byte, _ transport.StreamDialer, _ transport.PacketDialer, _ ...string) (transport.StreamDialer, error) {
+					gotCfg = cfg
+					return stubStreamDialer{}, nil
+				}
+				t.Cleanup(func() { newSmartDialerFn = orig })
+
+				if _, err := NewKindling("test", tc.opts...); err != nil {
+					t.Fatalf("NewKindling() error = %v", err)
+				}
+				if string(gotCfg) != string(customCfg) {
+					t.Errorf("newSmartDialer config arg = %q; want %q", gotCfg, customCfg)
+				}
+			})
+		}
+	})
+
+	t.Run("WithSmartDialerConfig_Empty_ReturnsError", func(t *testing.T) {
+		t.Parallel()
+		if _, err := NewKindling("test", WithSmartDialerConfig(nil)); err == nil {
+			t.Error("NewKindling(WithSmartDialerConfig(nil)) should return error")
+		}
+		if _, err := NewKindling("test", WithSmartDialerConfig([]byte{})); err == nil {
+			t.Error("NewKindling(WithSmartDialerConfig(empty)) should return error")
 		}
 	})
 }
