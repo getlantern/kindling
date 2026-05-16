@@ -81,6 +81,12 @@ type kindling struct {
 	// on its default TCPDialer{} / UDPDialer{}.
 	streamDialer transport.StreamDialer
 	packetDialer transport.PacketDialer
+	// deferred holds option work that must run after every other option
+	// has had a chance to mutate the struct. Used by WithProxyless so it
+	// reads streamDialer/packetDialer after WithStreamDialer /
+	// WithPacketDialer have set them, regardless of option order in the
+	// NewKindling call.
+	deferred []func() error
 }
 
 var _ Kindling = (*kindling)(nil)
@@ -96,6 +102,11 @@ func NewKindling(name string, options ...Option) (Kindling, error) {
 	}
 	for _, opt := range options {
 		if err := opt(k); err != nil {
+			return nil, fmt.Errorf("kindling: %w", err)
+		}
+	}
+	for _, fn := range k.deferred {
+		if err := fn(); err != nil {
 			return nil, fmt.Errorf("kindling: %w", err)
 		}
 	}
@@ -259,23 +270,29 @@ func WithAMPCache(c amp.Client) Option {
 }
 
 // WithProxyless enables direct access using the Outline SDK smart dialer,
-// which bypasses DNS-based and SNI-based blocking.
+// which bypasses DNS-based and SNI-based blocking. The smart dialer is
+// constructed after every other option has run, so WithStreamDialer /
+// WithPacketDialer take effect regardless of the order callers pass them
+// to NewKindling.
 func WithProxyless(domains ...string) Option {
 	return func(k *kindling) error {
-		dialer, err := newSmartDialer(k.logWriter, k.streamDialer, k.packetDialer, domains...)
-		if err != nil {
-			return fmt.Errorf("creating smart dialer: %w", err)
-		}
-		k.transports = append(k.transports, &namedTransport{
-			name:         string(TransportSmart),
-			isStreamable: true,
-			newRT: func(ctx context.Context, addr string) (http.RoundTripper, error) {
-				conn, err := dialer.DialStream(ctx, addr)
-				if err != nil {
-					return nil, fmt.Errorf("smart dial: %w", err)
-				}
-				return preconnectedTransport(conn), nil
-			},
+		k.deferred = append(k.deferred, func() error {
+			dialer, err := newSmartDialerFn(k.logWriter, k.streamDialer, k.packetDialer, domains...)
+			if err != nil {
+				return fmt.Errorf("creating smart dialer: %w", err)
+			}
+			k.transports = append(k.transports, &namedTransport{
+				name:         string(TransportSmart),
+				isStreamable: true,
+				newRT: func(ctx context.Context, addr string) (http.RoundTripper, error) {
+					conn, err := dialer.DialStream(ctx, addr)
+					if err != nil {
+						return nil, fmt.Errorf("smart dial: %w", err)
+					}
+					return preconnectedTransport(conn), nil
+				},
+			})
+			return nil
 		})
 		return nil
 	}
@@ -302,6 +319,11 @@ func (t *namedTransport) NewRoundTripper(ctx context.Context, addr string) (http
 
 //go:embed smart_dialer_config.yml
 var configFS embed.FS
+
+// newSmartDialerFn is the package-level constructor used by WithProxyless and
+// NewSmartHTTPTransport. Tests swap it to avoid the strategy's real-network
+// probe during NewKindling's deferred phase.
+var newSmartDialerFn = newSmartDialer
 
 // newSmartDialer constructs an Outline-SDK smart dialer. stream / packet are
 // the base dialers the strategy probes against; either may be nil, in which
@@ -366,7 +388,7 @@ func NewSmartHTTPTransportWithDialer(
 	packet transport.PacketDialer,
 	domains ...string,
 ) (*http.Transport, error) {
-	dialer, err := newSmartDialer(logWriter, stream, packet, domains...)
+	dialer, err := newSmartDialerFn(logWriter, stream, packet, domains...)
 	if err != nil {
 		return nil, err
 	}
