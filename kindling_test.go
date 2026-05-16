@@ -191,6 +191,73 @@ func TestNewKindling(t *testing.T) {
 	})
 }
 
+// TestNewSmartHTTPTransportWithConfig guards the standalone (non-Kindling)
+// path used by radiance/kindling/smart: the config []byte must reach
+// newSmartDialerFn in the same slot WithSmartDialerConfig sends it through,
+// and the helper must reject a non-nil empty slice — matching the option
+// path's validation so a `make([]byte, 0)` mistake doesn't silently skip
+// the embedded default and hand outline-sdk empty YAML.
+func TestNewSmartHTTPTransportWithConfig(t *testing.T) {
+	t.Run("PlumbsConfigThrough", func(t *testing.T) {
+		customCfg := []byte("dns: []\ntls: []\n")
+		stream := stubStreamDialer{}
+		packet := stubPacketDialer{}
+
+		var gotCfg []byte
+		var gotStream transport.StreamDialer
+		var gotPacket transport.PacketDialer
+		var gotDomains []string
+		orig := newSmartDialerFn
+		newSmartDialerFn = func(_ io.Writer, cfg []byte, s transport.StreamDialer, p transport.PacketDialer, domains ...string) (transport.StreamDialer, error) {
+			gotCfg, gotStream, gotPacket, gotDomains = cfg, s, p, domains
+			return stubStreamDialer{}, nil
+		}
+		t.Cleanup(func() { newSmartDialerFn = orig })
+
+		_, err := NewSmartHTTPTransportWithConfig(io.Discard, customCfg, stream, packet, "example.com")
+		if err != nil {
+			t.Fatalf("NewSmartHTTPTransportWithConfig() error = %v", err)
+		}
+		if string(gotCfg) != string(customCfg) {
+			t.Errorf("config arg = %q; want %q", gotCfg, customCfg)
+		}
+		if gotStream != stream {
+			t.Errorf("stream arg = %v; want %v", gotStream, stream)
+		}
+		if gotPacket != packet {
+			t.Errorf("packet arg = %v; want %v", gotPacket, packet)
+		}
+		if len(gotDomains) != 1 || gotDomains[0] != "example.com" {
+			t.Errorf("domains arg = %v; want [example.com]", gotDomains)
+		}
+	})
+
+	t.Run("NilConfigUsesEmbedded", func(t *testing.T) {
+		var gotCfg []byte
+		orig := newSmartDialerFn
+		newSmartDialerFn = func(_ io.Writer, cfg []byte, _ transport.StreamDialer, _ transport.PacketDialer, _ ...string) (transport.StreamDialer, error) {
+			gotCfg = cfg
+			return stubStreamDialer{}, nil
+		}
+		t.Cleanup(func() { newSmartDialerFn = orig })
+
+		_, err := NewSmartHTTPTransportWithConfig(io.Discard, nil, nil, nil, "example.com")
+		if err != nil {
+			t.Fatalf("NewSmartHTTPTransportWithConfig() error = %v", err)
+		}
+		if gotCfg != nil {
+			t.Errorf("config arg = %q; want nil (so newSmartDialer falls back to embedded)", gotCfg)
+		}
+	})
+
+	t.Run("EmptyConfigReturnsError", func(t *testing.T) {
+		_, err := NewSmartHTTPTransportWithConfig(io.Discard, []byte{}, nil, nil, "example.com")
+		if err == nil {
+			t.Error("NewSmartHTTPTransportWithConfig(empty) should return error")
+		}
+	})
+}
+
 // stubStreamDialer is a minimal transport.StreamDialer for tests that just
 // need to verify the dialer pointer was plumbed through. The Dial method is
 // not expected to fire — assertions check struct fields, not behavior.

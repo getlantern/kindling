@@ -425,6 +425,7 @@ func NewSmartHTTPTransportWithDialer(
 // stream dialers, since outline-sdk's smart strategy then requires the base
 // dialer to be *transport.TCPDialer. Pass a config that omits `system: {}`
 // (using DoH/DoT entries) to route every probe through your stream dialer.
+// A non-nil but empty config is rejected, matching WithSmartDialerConfig.
 func NewSmartHTTPTransportWithConfig(
 	logWriter io.Writer,
 	config []byte,
@@ -432,6 +433,9 @@ func NewSmartHTTPTransportWithConfig(
 	packet transport.PacketDialer,
 	domains ...string,
 ) (*http.Transport, error) {
+	if config != nil && len(config) == 0 {
+		return nil, fmt.Errorf("smart dialer config is empty")
+	}
 	dialer, err := newSmartDialerFn(logWriter, config, stream, packet, domains...)
 	if err != nil {
 		return nil, err
