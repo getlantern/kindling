@@ -2,14 +2,17 @@ package kindling
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Jigsaw-Code/outline-sdk/transport"
 	"github.com/getlantern/domainfront"
 )
 
@@ -86,6 +89,74 @@ func TestNewKindling(t *testing.T) {
 			t.Error("NewKindling(WithTransport(nil)) should return error")
 		}
 	})
+
+	// WithStreamDialer / WithPacketDialer must take effect on WithProxyless
+	// regardless of the order callers pass them. The smart dialer is
+	// constructed in a deferred pass after every option has had a chance to
+	// set streamDialer/packetDialer on the struct — this test guards that
+	// pass from regressing back to in-option construction.
+	t.Run("ProxylessDialerOrderIndependent", func(t *testing.T) {
+		stream := stubStreamDialer{}
+		packet := stubPacketDialer{}
+		cases := []struct {
+			name string
+			opts []Option
+		}{
+			{"dialer-before-proxyless", []Option{
+				WithStreamDialer(stream),
+				WithPacketDialer(packet),
+				WithProxyless("example.com"),
+			}},
+			{"proxyless-before-dialer", []Option{
+				WithProxyless("example.com"),
+				WithStreamDialer(stream),
+				WithPacketDialer(packet),
+			}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				var gotStream transport.StreamDialer
+				var gotPacket transport.PacketDialer
+				orig := newSmartDialerFn
+				newSmartDialerFn = func(_ io.Writer, s transport.StreamDialer, p transport.PacketDialer, _ ...string) (transport.StreamDialer, error) {
+					gotStream, gotPacket = s, p
+					return stubStreamDialer{}, nil
+				}
+				t.Cleanup(func() { newSmartDialerFn = orig })
+
+				k, err := NewKindling("test", tc.opts...)
+				if err != nil {
+					t.Fatalf("NewKindling() error = %v", err)
+				}
+				if gotStream != stream {
+					t.Errorf("newSmartDialer stream arg = %v; want %v", gotStream, stream)
+				}
+				if gotPacket != packet {
+					t.Errorf("newSmartDialer packet arg = %v; want %v", gotPacket, packet)
+				}
+				ki := k.(*kindling)
+				if len(ki.transports) != 1 || ki.transports[0].Name() != string(TransportSmart) {
+					t.Errorf("transports = %v; want one %q", ki.transports, TransportSmart)
+				}
+			})
+		}
+	})
+}
+
+// stubStreamDialer is a minimal transport.StreamDialer for tests that just
+// need to verify the dialer pointer was plumbed through. The Dial method is
+// not expected to fire — assertions check struct fields, not behavior.
+type stubStreamDialer struct{}
+
+func (stubStreamDialer) DialStream(context.Context, string) (transport.StreamConn, error) {
+	return nil, errors.New("stub: unused")
+}
+
+// stubPacketDialer is the UDP counterpart to stubStreamDialer.
+type stubPacketDialer struct{}
+
+func (stubPacketDialer) DialPacket(context.Context, string) (net.Conn, error) {
+	return nil, errors.New("stub: unused")
 }
 
 func TestLantern(t *testing.T) {
