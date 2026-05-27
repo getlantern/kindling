@@ -95,8 +95,7 @@ type kindling struct {
 var _ Kindling = (*kindling)(nil)
 
 // NewKindling creates a Kindling instance with the given application name and
-// options. Returns an error if any option fails (e.g. a nil transport argument
-// or a failed smart dialer initialization).
+// options. Returns an error if any option fails (e.g. a nil transport argument).
 func NewKindling(name string, options ...Option) (Kindling, error) {
 	k := &kindling{
 		appName:   name,
@@ -110,11 +109,15 @@ func NewKindling(name string, options ...Option) (Kindling, error) {
 	}
 	for _, fn := range k.deferred {
 		if err := fn(); err != nil {
-			k.log.Warn("faied to start proxyless option", slog.Any("error", err))
+			k.log.Warn("failed to start proxyless option", slog.Any("error", err))
 		}
 	}
 	if k.panicListener == nil {
 		k.panicListener = func(msg string) { k.log.Error(msg) }
+	}
+
+	if len(k.transports) == 0 {
+		return nil, fmt.Errorf("no transports available")
 	}
 	return k, nil
 }
