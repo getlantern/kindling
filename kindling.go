@@ -110,7 +110,7 @@ func NewKindling(name string, options ...Option) (Kindling, error) {
 	}
 	for _, fn := range k.deferred {
 		if err := fn(); err != nil {
-			return nil, fmt.Errorf("kindling: %w", err)
+			k.log.Warn("faied to start proxyless option", slog.Any("error", err))
 		}
 	}
 	if k.panicListener == nil {
@@ -391,7 +391,7 @@ func preconnectedTransport(conn net.Conn) *http.Transport {
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:  20 * time.Second,
+		TLSHandshakeTimeout:   20 * time.Second,
 		ExpectContinueTimeout: 4 * time.Second,
 	}
 }
@@ -447,7 +447,7 @@ func NewSmartHTTPTransportWithConfig(
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:  20 * time.Second,
+		TLSHandshakeTimeout:   20 * time.Second,
 		ExpectContinueTimeout: 4 * time.Second,
 	}, nil
 }
