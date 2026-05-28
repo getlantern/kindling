@@ -116,9 +116,6 @@ func NewKindling(name string, options ...Option) (Kindling, error) {
 		k.panicListener = func(msg string) { k.log.Error(msg) }
 	}
 
-	if len(k.transports) == 0 {
-		return nil, fmt.Errorf("no transports available")
-	}
 	return k, nil
 }
 
