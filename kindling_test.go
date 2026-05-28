@@ -142,6 +142,49 @@ func TestNewKindling(t *testing.T) {
 		}
 	})
 
+	// A deferred (proxyless) init failure must not sink the whole instance
+	// when another transport is configured: kindling degrades to the working
+	// transports rather than failing construction.
+	t.Run("ProxylessFails_OtherTransportSurvives", func(t *testing.T) {
+		orig := newSmartDialerFn
+		newSmartDialerFn = func(_ io.Writer, _ []byte, _ transport.StreamDialer, _ transport.PacketDialer, _ ...string) (transport.StreamDialer, error) {
+			return nil, errors.New("probe failed")
+		}
+		t.Cleanup(func() { newSmartDialerFn = orig })
+
+		k, err := NewKindling("test",
+			WithTransport(&namedTransport{name: "stub"}),
+			WithProxyless("example.com"),
+		)
+		if err != nil {
+			t.Fatalf("NewKindling() error = %v; want nil when a non-proxyless transport remains", err)
+		}
+		ki := k.(*kindling)
+		if len(ki.transports) != 1 || ki.transports[0].Name() != "stub" {
+			t.Errorf("transports = %v; want only the surviving %q transport", ki.transports, "stub")
+		}
+	})
+
+	// When the only configured transport is proxyless and its deferred init
+	// fails, kindling has zero usable transports and must surface that at
+	// construction rather than deferring a "no eligible transports" error to
+	// the first request.
+	t.Run("ProxylessFails_NoOtherTransport_ReturnsError", func(t *testing.T) {
+		orig := newSmartDialerFn
+		newSmartDialerFn = func(_ io.Writer, _ []byte, _ transport.StreamDialer, _ transport.PacketDialer, _ ...string) (transport.StreamDialer, error) {
+			return nil, errors.New("probe failed")
+		}
+		t.Cleanup(func() { newSmartDialerFn = orig })
+
+		_, err := NewKindling("test", WithProxyless("example.com"))
+		if err == nil {
+			t.Fatal("NewKindling() = nil error; want error when no transports remain")
+		}
+		if !strings.Contains(err.Error(), "probe failed") {
+			t.Errorf("error = %q; want it to wrap the underlying deferred failure", err)
+		}
+	})
+
 	// WithSmartDialerConfig must reach newSmartDialerFn whether it was set
 	// before or after WithProxyless. Guards the deferred-construction path
 	// from regressing.
