@@ -3,6 +3,7 @@ package kindling
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -95,7 +96,10 @@ type kindling struct {
 var _ Kindling = (*kindling)(nil)
 
 // NewKindling creates a Kindling instance with the given application name and
-// options. Returns an error if any option fails (e.g. a nil transport argument).
+// options. Returns an error if any option fails synchronously (e.g. a nil
+// transport argument). Deferred initialization failures (such as a failed smart
+// dialer in WithProxyless) are logged as warnings and are only fatal when they
+// leave Kindling with no usable transports.
 func NewKindling(name string, options ...Option) (Kindling, error) {
 	k := &kindling{
 		appName:   name,
@@ -107,10 +111,18 @@ func NewKindling(name string, options ...Option) (Kindling, error) {
 			return nil, fmt.Errorf("kindling: %w", err)
 		}
 	}
+	var deferredErrs []error
 	for _, fn := range k.deferred {
 		if err := fn(); err != nil {
-			k.log.Warn("failed to start proxyless option", slog.Any("error", err))
+			k.log.Warn("deferred option failed to initialize", slog.Any("error", err))
+			deferredErrs = append(deferredErrs, err)
 		}
+	}
+	// A deferred failure is only fatal when it leaves Kindling with no usable
+	// transports. Otherwise the remaining transports can still serve requests,
+	// so we keep going rather than failing the whole instance.
+	if len(deferredErrs) > 0 && len(k.transports) == 0 {
+		return nil, fmt.Errorf("kindling: no transports configured: %w", errors.Join(deferredErrs...))
 	}
 	if k.panicListener == nil {
 		k.panicListener = func(msg string) { k.log.Error(msg) }
