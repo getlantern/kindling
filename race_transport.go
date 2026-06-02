@@ -297,8 +297,9 @@ func cloneRequest(req *http.Request, app, method string, bodyBytes []byte) *http
 }
 
 // requestTimeout returns the race budget for the request, using the
-// longest timeout requested by any eligible transport (or the default
-// if none overrides it).
+// longest timeout requested by any configured transport (or the default
+// if none overrides it). Transports that get filtered out later
+// (MaxLength, IsStreamable) may still influence this budget.
 func (t *raceTransport) requestTimeout(req *http.Request) time.Duration {
 	base := 80 * time.Second
 	if req.Body != nil && req.Body != http.NoBody && req.ContentLength != 0 {

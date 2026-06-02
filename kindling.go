@@ -65,7 +65,7 @@ type Transport interface {
 
 	// RequestTimeout returns the maximum time a single request is allowed to
 	// spend on this transport. Zero means the race transport picks a default
-	// (80 s for GET/HEAD, 3 min for POST-with-body).
+	// (80 s for requests without a body, 3 min for requests with a body).
 	RequestTimeout() time.Duration
 }
 
@@ -354,9 +354,9 @@ type namedTransport struct {
 	reqTimeout   time.Duration
 }
 
-func (t *namedTransport) Name() string             { return t.name }
-func (t *namedTransport) MaxLength() int           { return t.maxLength }
-func (t *namedTransport) IsStreamable() bool       { return t.isStreamable }
+func (t *namedTransport) Name() string                  { return t.name }
+func (t *namedTransport) MaxLength() int                { return t.maxLength }
+func (t *namedTransport) IsStreamable() bool            { return t.isStreamable }
 func (t *namedTransport) RequestTimeout() time.Duration { return t.reqTimeout }
 
 func (t *namedTransport) NewRoundTripper(ctx context.Context, addr string) (http.RoundTripper, error) {

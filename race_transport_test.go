@@ -29,10 +29,10 @@ type mockTransport struct {
 	newRoundTripper func(ctx context.Context, addr string) (http.RoundTripper, error)
 }
 
-func (m *mockTransport) Name() string                            { return m.name }
-func (m *mockTransport) IsStreamable() bool                      { return m.isStreamable }
-func (m *mockTransport) MaxLength() int                          { return m.maxLength }
-func (m *mockTransport) RequestTimeout() time.Duration           { return m.reqTimeout }
+func (m *mockTransport) Name() string                  { return m.name }
+func (m *mockTransport) IsStreamable() bool            { return m.isStreamable }
+func (m *mockTransport) MaxLength() int                { return m.maxLength }
+func (m *mockTransport) RequestTimeout() time.Duration { return m.reqTimeout }
 func (m *mockTransport) NewRoundTripper(ctx context.Context, addr string) (http.RoundTripper, error) {
 	return m.newRoundTripper(ctx, addr)
 }
