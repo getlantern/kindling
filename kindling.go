@@ -62,6 +62,11 @@ type Transport interface {
 
 	// Name identifies this transport for logging and debugging.
 	Name() string
+
+	// RequestTimeout returns the maximum time a single request is allowed to
+	// spend on this transport. Zero means the race transport picks a default
+	// (80 s for GET/HEAD, 3 min for POST-with-body).
+	RequestTimeout() time.Duration
 }
 
 // Option configures a Kindling instance. Options are applied in the order
@@ -157,6 +162,7 @@ func (k *kindling) ReplaceTransport(name TransportName, rt func(ctx context.Cont
 				name:         string(name),
 				maxLength:    tr.MaxLength(),
 				isStreamable: tr.IsStreamable(),
+				reqTimeout:   tr.RequestTimeout(),
 				newRT:        rt,
 			}
 			return nil
@@ -275,11 +281,15 @@ func WithDNSTunnel(d dnstt.DNSTT) Option {
 		if d == nil {
 			return fmt.Errorf("dnstt instance is nil")
 		}
-		k.transports = append(k.transports, &namedTransport{
+		nt := &namedTransport{
 			name:         string(TransportDNSTunnel),
 			isStreamable: true,
 			newRT:        d.NewRoundTripper,
-		})
+		}
+		if tt, ok := d.(interface{ RequestTimeout() time.Duration }); ok {
+			nt.reqTimeout = tt.RequestTimeout()
+		}
+		k.transports = append(k.transports, nt)
 		return nil
 	}
 }
@@ -338,11 +348,13 @@ type namedTransport struct {
 	maxLength    int
 	isStreamable bool
 	newRT        func(ctx context.Context, addr string) (http.RoundTripper, error)
+	reqTimeout   time.Duration
 }
 
-func (t *namedTransport) Name() string       { return t.name }
-func (t *namedTransport) MaxLength() int     { return t.maxLength }
-func (t *namedTransport) IsStreamable() bool { return t.isStreamable }
+func (t *namedTransport) Name() string             { return t.name }
+func (t *namedTransport) MaxLength() int           { return t.maxLength }
+func (t *namedTransport) IsStreamable() bool       { return t.isStreamable }
+func (t *namedTransport) RequestTimeout() time.Duration { return t.reqTimeout }
 
 func (t *namedTransport) NewRoundTripper(ctx context.Context, addr string) (http.RoundTripper, error) {
 	return t.newRT(ctx, addr)

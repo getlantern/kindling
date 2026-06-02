@@ -86,7 +86,7 @@ type connectResult struct {
 }
 
 func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	ctx, cancel := context.WithTimeout(req.Context(), requestTimeout(req))
+	ctx, cancel := context.WithTimeout(req.Context(), t.requestTimeout(req))
 	defer cancel()
 
 	bodyBytes, err := drainRequestBody(req)
@@ -296,13 +296,20 @@ func cloneRequest(req *http.Request, app, method string, bodyBytes []byte) *http
 	return clone
 }
 
-// requestTimeout returns the appropriate timeout for the request — longer
-// for uploads with content, shorter for GETs and small requests.
-func requestTimeout(req *http.Request) time.Duration {
+// requestTimeout returns the race budget for the request, using the
+// longest timeout requested by any eligible transport (or the default
+// if none overrides it).
+func (t *raceTransport) requestTimeout(req *http.Request) time.Duration {
+	base := 80 * time.Second
 	if req.Body != nil && req.Body != http.NoBody && req.ContentLength != 0 {
-		return 3 * time.Minute
+		base = 3 * time.Minute
 	}
-	return 80 * time.Second
+	for _, tr := range t.transports {
+		if tt := tr.RequestTimeout(); tt > base {
+			base = tt
+		}
+	}
+	return base
 }
 
 // drainRequestBody reads the full request body into a byte slice and restores

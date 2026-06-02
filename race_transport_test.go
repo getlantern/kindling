@@ -31,6 +31,7 @@ type mockTransport struct {
 func (m *mockTransport) Name() string       { return m.name }
 func (m *mockTransport) IsStreamable() bool { return m.isStreamable }
 func (m *mockTransport) MaxLength() int     { return m.maxLength }
+func (m *mockTransport) RequestTimeout() time.Duration { return 0 }
 func (m *mockTransport) NewRoundTripper(ctx context.Context, addr string) (http.RoundTripper, error) {
 	return m.newRoundTripper(ctx, addr)
 }
@@ -822,10 +823,12 @@ func TestDrainRequestBody(t *testing.T) {
 func TestRequestTimeout(t *testing.T) {
 	t.Parallel()
 
+	rt := &raceTransport{}
+
 	t.Run("NoContent", func(t *testing.T) {
 		req, err := http.NewRequest("GET", "http://example.com", nil)
 		require.NoError(t, err)
-		assert.Equal(t, 80*time.Second, requestTimeout(req))
+		assert.Equal(t, 80*time.Second, rt.requestTimeout(req))
 	})
 
 	t.Run("WithContent", func(t *testing.T) {
@@ -833,6 +836,6 @@ func TestRequestTimeout(t *testing.T) {
 			bytes.NewReader(make([]byte, 1000)))
 		require.NoError(t, err)
 		req.ContentLength = 1000
-		assert.Equal(t, 3*time.Minute, requestTimeout(req))
+		assert.Equal(t, 3*time.Minute, rt.requestTimeout(req))
 	})
 }
