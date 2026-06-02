@@ -289,6 +289,9 @@ func WithDNSTunnel(d dnstt.DNSTT) Option {
 		if tt, ok := d.(interface{ RequestTimeout() time.Duration }); ok {
 			nt.reqTimeout = tt.RequestTimeout()
 		}
+		if tt, ok := d.(interface{ MaxLength() int }); ok {
+			nt.maxLength = tt.MaxLength()
+		}
 		k.transports = append(k.transports, nt)
 		return nil
 	}
