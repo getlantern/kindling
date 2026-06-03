@@ -25,12 +25,14 @@ type mockTransport struct {
 	name            string
 	isStreamable    bool
 	maxLength       int
+	reqTimeout      time.Duration
 	newRoundTripper func(ctx context.Context, addr string) (http.RoundTripper, error)
 }
 
-func (m *mockTransport) Name() string       { return m.name }
-func (m *mockTransport) IsStreamable() bool { return m.isStreamable }
-func (m *mockTransport) MaxLength() int     { return m.maxLength }
+func (m *mockTransport) Name() string                  { return m.name }
+func (m *mockTransport) IsStreamable() bool            { return m.isStreamable }
+func (m *mockTransport) MaxLength() int                { return m.maxLength }
+func (m *mockTransport) RequestTimeout() time.Duration { return m.reqTimeout }
 func (m *mockTransport) NewRoundTripper(ctx context.Context, addr string) (http.RoundTripper, error) {
 	return m.newRoundTripper(ctx, addr)
 }
@@ -823,16 +825,62 @@ func TestRequestTimeout(t *testing.T) {
 	t.Parallel()
 
 	t.Run("NoContent", func(t *testing.T) {
+		rt := &raceTransport{}
 		req, err := http.NewRequest("GET", "http://example.com", nil)
 		require.NoError(t, err)
-		assert.Equal(t, 80*time.Second, requestTimeout(req))
+		assert.Equal(t, 80*time.Second, rt.requestTimeout(req, rt.transports))
 	})
 
 	t.Run("WithContent", func(t *testing.T) {
+		rt := &raceTransport{}
 		req, err := http.NewRequest("POST", "http://example.com",
 			bytes.NewReader(make([]byte, 1000)))
 		require.NoError(t, err)
 		req.ContentLength = 1000
-		assert.Equal(t, 3*time.Minute, requestTimeout(req))
+		assert.Equal(t, 3*time.Minute, rt.requestTimeout(req, rt.transports))
+	})
+
+	t.Run("TransportOverridesBase", func(t *testing.T) {
+		rt := &raceTransport{
+			transports: []Transport{
+				&mockTransport{name: "slow", reqTimeout: 5 * time.Minute},
+			},
+		}
+		req, _ := http.NewRequest("GET", "http://example.com", nil)
+		assert.Equal(t, 5*time.Minute, rt.requestTimeout(req, rt.transports))
+	})
+
+	t.Run("TakesMaxAcrossTransports", func(t *testing.T) {
+		rt := &raceTransport{
+			transports: []Transport{
+				&mockTransport{name: "fast", reqTimeout: 2 * time.Minute},
+				&mockTransport{name: "slow", reqTimeout: 5 * time.Minute},
+				&mockTransport{name: "medium", reqTimeout: 3 * time.Minute},
+			},
+		}
+		req, _ := http.NewRequest("POST", "http://example.com",
+			bytes.NewReader(make([]byte, 1000)))
+		req.ContentLength = 1000
+		assert.Equal(t, 5*time.Minute, rt.requestTimeout(req, rt.transports))
+	})
+
+	t.Run("IgnoresFilteredTransports", func(t *testing.T) {
+		// The slow transport caps its body size below this request, so
+		// filterTransports drops it and its long timeout must not leak
+		// into the budget.
+		rt := &raceTransport{
+			log: slog.Default(),
+			transports: []Transport{
+				&mockTransport{name: "fast", reqTimeout: 4 * time.Minute},
+				&mockTransport{name: "slow", reqTimeout: 10 * time.Minute, maxLength: 10},
+			},
+		}
+		req, _ := http.NewRequest("POST", "http://example.com",
+			bytes.NewReader(make([]byte, 1000)))
+		req.ContentLength = 1000
+		eligible := rt.filterTransports(req, make([]byte, 1000))
+		// "slow" is filtered out, so its 10m timeout must not apply; the
+		// budget comes from the eligible "fast" transport instead.
+		assert.Equal(t, 4*time.Minute, rt.requestTimeout(req, eligible))
 	})
 }

@@ -234,6 +234,87 @@ func TestNewKindling(t *testing.T) {
 	})
 }
 
+// stubDNSTT implements dnstt.DNSTT plus the optional RequestTimeout()
+// and MaxLength() methods that WithDNSTunnel type-asserts.
+type stubDNSTT struct {
+	reqTimeout time.Duration
+	maxLength  int
+}
+
+func (s *stubDNSTT) NewRoundTripper(ctx context.Context, addr string) (http.RoundTripper, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *stubDNSTT) Close() error { return nil }
+
+func (s *stubDNSTT) RequestTimeout() time.Duration { return s.reqTimeout }
+func (s *stubDNSTT) MaxLength() int               { return s.maxLength }
+
+func TestWithDNSTunnelOverrides(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Defaults", func(t *testing.T) {
+		t.Parallel()
+		ki, err := NewKindling("test", WithDNSTunnel(&stubDNSTT{}))
+		if err != nil {
+			t.Fatalf("NewKindling() error = %v", err)
+		}
+		k := ki.(*kindling)
+		if len(k.transports) != 1 {
+			t.Fatalf("want 1 transport, got %d", len(k.transports))
+		}
+		tr := k.transports[0]
+		if tr.RequestTimeout() != 0 {
+			t.Errorf("RequestTimeout() = %v, want 0", tr.RequestTimeout())
+		}
+		if tr.MaxLength() != 0 {
+			t.Errorf("MaxLength() = %d, want 0", tr.MaxLength())
+		}
+	})
+
+	t.Run("RequestTimeout", func(t *testing.T) {
+		t.Parallel()
+		ki, err := NewKindling("test", WithDNSTunnel(&stubDNSTT{reqTimeout: 5 * time.Minute}))
+		if err != nil {
+			t.Fatalf("NewKindling() error = %v", err)
+		}
+		tr := ki.(*kindling).transports[0]
+		if tr.RequestTimeout() != 5*time.Minute {
+			t.Errorf("RequestTimeout() = %v, want 5m", tr.RequestTimeout())
+		}
+	})
+
+	t.Run("MaxLength", func(t *testing.T) {
+		t.Parallel()
+		ki, err := NewKindling("test", WithDNSTunnel(&stubDNSTT{maxLength: 10_000}))
+		if err != nil {
+			t.Fatalf("NewKindling() error = %v", err)
+		}
+		tr := ki.(*kindling).transports[0]
+		if tr.MaxLength() != 10_000 {
+			t.Errorf("MaxLength() = %d, want 10000", tr.MaxLength())
+		}
+	})
+
+	t.Run("Both", func(t *testing.T) {
+		t.Parallel()
+		ki, err := NewKindling("test", WithDNSTunnel(&stubDNSTT{
+			reqTimeout: 5 * time.Minute,
+			maxLength:  10_000,
+		}))
+		if err != nil {
+			t.Fatalf("NewKindling() error = %v", err)
+		}
+		tr := ki.(*kindling).transports[0]
+		if tr.RequestTimeout() != 5*time.Minute {
+			t.Errorf("RequestTimeout() = %v, want 5m", tr.RequestTimeout())
+		}
+		if tr.MaxLength() != 10_000 {
+			t.Errorf("MaxLength() = %d, want 10000", tr.MaxLength())
+		}
+	})
+}
+
 // TestNewSmartHTTPTransportWithConfig guards the standalone (non-Kindling)
 // path used by radiance/kindling/smart: the config []byte must reach
 // newSmartDialerFn in the same slot WithSmartDialerConfig sends it through,
