@@ -51,8 +51,8 @@ github.com/envoyproxy/go-control-plane v0.9.4/go.mod h1:6rpuAdCZL397s3pYoYcLgu1m
 github.com/envoyproxy/protoc-gen-validate v0.1.0/go.mod h1:iSmxcyjqTsJpI2R4NaDN7+kN2VEUnK/pcBlmesArF7c=
 github.com/flynn/noise v1.0.1-0.20220214164934-d803f5c4b0f4 h1:6pcIWmKkQZdpPjs/pD9OLt0NwftBozNE0Nm5zMCG2C4=
 github.com/flynn/noise v1.0.1-0.20220214164934-d803f5c4b0f4/go.mod h1:xbMo+0i6+IGbYdJhF31t2eR1BIU0CYc12+BNAKwUTag=
-github.com/getlantern/amp v0.0.0-20260305201851-782bc8045e58 h1:3wxMKw90adxiEzsJmAmMHqBJQr/P/9Goqy/U2a1l/sg=
-github.com/getlantern/amp v0.0.0-20260305201851-782bc8045e58/go.mod h1:p6WdG48YAz5SCUpiMSGLy616A6YghKToc63y3NP7avI=
+github.com/getlantern/amp v0.0.0-20260606002220-a8629924577c h1:ZzxuhIWO295y4eE6wPYUq8Smntlgg+y39L5OOyMJY+k=
+github.com/getlantern/amp v0.0.0-20260606002220-a8629924577c/go.mod h1:b5teAOFT+vpBqc2CHoz74QTEM15iOv1PLdQogwXcfrM=
 github.com/getlantern/dnstt v0.0.0-20260603191204-3b860502c0ac h1:TMvkNgLVyIYAfu1dYrOuRPYMVY+cHEo1C0CYWhtSw2A=
 github.com/getlantern/dnstt v0.0.0-20260603191204-3b860502c0ac/go.mod h1:0+wlia2hljruM7rhjzBMFhve011lGRO0OxjVSOcXBoQ=
 github.com/getlantern/domainfront v0.0.0-20260419161617-0bff0b2169f4 h1:/Q9FJvKPyuXfH6tfA+C+t9/AbvGWs3Yp9iqI74FYvb4=
