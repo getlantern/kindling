@@ -538,6 +538,35 @@ func TestGroupByPriority(t *testing.T) {
 		t.Parallel()
 		assert.Empty(t, groupByPriority(nil))
 	})
+
+	// A Transport that doesn't implement the optional transportPriority
+	// interface must default to priorityDefault and land in the first tier.
+	t.Run("WithoutPriorityInterface_DefaultsToDefaultTier", func(t *testing.T) {
+		t.Parallel()
+		bare := bareTransport{name: "bare"}
+		assert.Equal(t, priorityDefault, priorityOf(bare),
+			"a Transport that doesn't implement Priority() must default to priorityDefault")
+		tiers := groupByPriority([]Transport{
+			&mockTransport{name: "dnstt", priority: priorityLastResort},
+			bare,
+		})
+		require.Len(t, tiers, 2)
+		assert.Equal(t, []string{"bare"}, names(tiers[0]), "a transport without Priority() lands in the default tier")
+		assert.Equal(t, []string{"dnstt"}, names(tiers[1]))
+	})
+}
+
+// bareTransport implements only the Transport interface — deliberately not the
+// optional transportPriority — so tests can exercise priorityOf's defaulting
+// path. (mockTransport implements Priority(), so it can't.)
+type bareTransport struct{ name string }
+
+func (b bareTransport) Name() string                  { return b.name }
+func (b bareTransport) IsStreamable() bool            { return false }
+func (b bareTransport) MaxLength() int                { return 0 }
+func (b bareTransport) RequestTimeout() time.Duration { return 0 }
+func (b bareTransport) NewRoundTripper(context.Context, string) (http.RoundTripper, error) {
+	return nil, nil
 }
 
 func names(transports []Transport) []string {

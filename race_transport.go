@@ -120,8 +120,11 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var heldResp *http.Response
 	var heldErr error
 	for i, tier := range tiers {
+		// All transports in a tier share a priority, so the first reports it.
+		// "tier" is the 0-based race order; "priority" is the Priority() value.
 		t.log.Debug("Racing transport tier",
 			"tier", i,
+			"priority", priorityOf(tier[0]),
 			"count", len(tier),
 			"bodyLength", len(bodyBytes),
 		)
@@ -150,6 +153,17 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// All tiers exhausted (or the budget ran out) without a usable response.
 	if heldResp != nil {
 		return heldResp, nil
+	}
+	if ctx.Err() != nil {
+		// The budget ran out before a later tier could be tried, so the
+		// transports were not all exhausted. heldErr already conveys the
+		// timeout (raceTier sets it to a "timed out, last error" wrap or
+		// ctx.Err()); surface it directly rather than claiming every
+		// transport failed.
+		if heldErr != nil {
+			return nil, heldErr
+		}
+		return nil, ctx.Err()
 	}
 	if heldErr != nil {
 		return nil, fmt.Errorf("all transports failed: %w", heldErr)
