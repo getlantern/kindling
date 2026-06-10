@@ -33,6 +33,18 @@ const (
 	TransportSmart       TransportName = "smart"
 )
 
+const (
+	// priorityDefault is the race tier for transports that don't specify one.
+	// They race in parallel, first connection wins.
+	priorityDefault = 0
+	// priorityLastResort marks a transport raced only after every
+	// default-tier transport has failed to produce a usable response. DNS
+	// tunneling uses it: it keeps working under heavy censorship but is slow
+	// and low-throughput, so it's reserved for when the faster transports are
+	// all blocked rather than letting it compete on equal footing.
+	priorityLastResort = 100
+)
+
 // Kindling creates HTTP clients that race requests across multiple censorship
 // circumvention transports, returning the first successful response.
 type Kindling interface {
@@ -163,6 +175,7 @@ func (k *kindling) ReplaceTransport(name TransportName, rt func(ctx context.Cont
 				maxLength:    tr.MaxLength(),
 				isStreamable: tr.IsStreamable(),
 				reqTimeout:   tr.RequestTimeout(),
+				priority:     priorityOf(tr),
 				newRT:        rt,
 			}
 			return nil
@@ -275,7 +288,10 @@ func WithDomainFronting(c *domainfront.Client) Option {
 	}
 }
 
-// WithDNSTunnel adds DNS tunneling via the provided dnstt.DNSTT.
+// WithDNSTunnel adds DNS tunneling via the provided dnstt.DNSTT. DNS tunneling
+// is raced only as a last resort: it keeps working under heavy censorship but
+// is slow and low-throughput, so the race transport reaches for it only after
+// every faster transport has failed to produce a usable response.
 func WithDNSTunnel(d dnstt.DNSTT) Option {
 	return func(k *kindling) error {
 		if d == nil {
@@ -285,6 +301,7 @@ func WithDNSTunnel(d dnstt.DNSTT) Option {
 			name:         string(TransportDNSTunnel),
 			isStreamable: true,
 			newRT:        d.NewRoundTripper,
+			priority:     priorityLastResort,
 		}
 		if tt, ok := d.(interface{ RequestTimeout() time.Duration }); ok {
 			nt.reqTimeout = tt.RequestTimeout()
@@ -352,12 +369,14 @@ type namedTransport struct {
 	isStreamable bool
 	newRT        func(ctx context.Context, addr string) (http.RoundTripper, error)
 	reqTimeout   time.Duration
+	priority     int
 }
 
 func (t *namedTransport) Name() string                  { return t.name }
 func (t *namedTransport) MaxLength() int                { return t.maxLength }
 func (t *namedTransport) IsStreamable() bool            { return t.isStreamable }
 func (t *namedTransport) RequestTimeout() time.Duration { return t.reqTimeout }
+func (t *namedTransport) Priority() int                 { return t.priority }
 
 func (t *namedTransport) NewRoundTripper(ctx context.Context, addr string) (http.RoundTripper, error) {
 	return t.newRT(ctx, addr)

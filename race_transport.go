@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sort"
 	"time"
 )
 
@@ -62,6 +63,15 @@ const IdempotentHeader = "X-Kindling-Idempotent"
 // Connections that fail to establish always fall back to the next transport
 // regardless of method — no body has been transmitted on a connection that
 // never came up, so replay risk is zero.
+//
+// Transports are raced in priority tiers (see [transportPriority]). All
+// transports in the lowest-numbered tier race in parallel as described above;
+// a higher-numbered tier is started only once every transport in all
+// lower-numbered tiers has failed to produce a usable response. This reserves
+// slow, low-throughput fallbacks like DNS tunneling for the case where the
+// faster transports are blocked, rather than letting them compete on equal
+// footing. When every transport shares the default priority (the common case),
+// there is a single tier and behavior is unchanged.
 type raceTransport struct {
 	transports    []Transport
 	panicListener func(string)
@@ -99,24 +109,85 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	ctx, cancel := context.WithTimeout(req.Context(), t.requestTimeout(req, eligible))
 	defer cancel()
 
-	t.log.Debug("Racing transports",
-		"count", len(eligible),
-		"bodyLength", len(bodyBytes),
-	)
+	idempotent := isRetryableMethod(req.Method) || req.Header.Get(IdempotentHeader) != ""
+	tiers := groupByPriority(eligible)
 
-	// Connect all eligible transports in parallel. Each goroutine sends
-	// exactly one result, so the channel will receive len(eligible) messages.
-	results := make(chan connectResult, len(eligible))
+	// Race each priority tier in turn. A tier that produces a usable response
+	// (final) returns immediately; otherwise we hold its best fallback (a 5xx
+	// response and/or the last error) and try the next tier. Slow last-resort
+	// transports only get dialed once every faster tier has failed. heldResp /
+	// heldErr carry the best fallback seen across all tiers so far.
+	var heldResp *http.Response
+	var heldErr error
+	for i, tier := range tiers {
+		t.log.Debug("Racing transport tier",
+			"tier", i,
+			"count", len(tier),
+			"bodyLength", len(bodyBytes),
+		)
+		res := t.raceTier(ctx, req, tier, bodyBytes, idempotent)
+		if res.final {
+			drainAndClose(heldResp)
+			return res.resp, res.err
+		}
+		// A 5xx held by this tier supersedes an earlier tier's fallback; an
+		// empty resp leaves the earlier one in place.
+		if res.resp != nil {
+			drainAndClose(heldResp)
+			heldResp = res.resp
+		}
+		if res.err != nil {
+			heldErr = res.err
+		}
+		if ctx.Err() != nil {
+			// The request's time budget is shared across tiers; once it's
+			// spent (timeout or caller cancellation) there's no point dialing
+			// another tier. Fall through to the best result held so far.
+			break
+		}
+	}
+
+	// All tiers exhausted (or the budget ran out) without a usable response.
+	if heldResp != nil {
+		return heldResp, nil
+	}
+	if heldErr != nil {
+		return nil, fmt.Errorf("all transports failed: %w", heldErr)
+	}
+	return nil, errors.New("no transports produced a response")
+}
+
+// tierResult is the outcome of racing a single priority tier. When final is
+// true, resp/err are exactly what RoundTrip should return — either a usable
+// response or a single-shot non-idempotent result. When final is false the
+// tier produced no usable response; resp holds the best fallback (a retryable
+// 5xx) and err the last connection/request error, for RoundTrip to weigh
+// against earlier tiers and carry into the next one. A timeout always reports
+// final=false so RoundTrip can still surface a usable response held by an
+// earlier tier; it stops iterating because the shared ctx is then done.
+type tierResult struct {
+	resp  *http.Response
+	err   error
+	final bool
+}
+
+// raceTier connects every transport in a single priority tier in parallel and
+// applies the method-aware retry policy within that tier. See [raceTransport]
+// for the retry semantics; the only addition is that an exhausted tier returns
+// final=false so RoundTrip can advance to the next tier.
+func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []Transport, bodyBytes []byte, idempotent bool) tierResult {
+	// Each goroutine sends exactly one result, so the channel receives
+	// len(tier) messages.
+	results := make(chan connectResult, len(tier))
 	addr := hostWithPort(req.URL.Host, req.URL.Scheme)
-	for _, tr := range eligible {
+	for _, tr := range tier {
 		go t.connect(ctx, tr, addr, results)
 	}
 
-	idempotent := isRetryableMethod(req.Method) || req.Header.Get(IdempotentHeader) != ""
-	var lastResp *http.Response
-	var lastErr error
+	var heldResp *http.Response
+	var heldErr error
 
-	for remaining := len(eligible); remaining > 0; remaining-- {
+	for remaining := len(tier); remaining > 0; remaining-- {
 		select {
 		case result := <-results:
 			if result.err != nil {
@@ -124,7 +195,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 					"name", result.name,
 					"error", result.err,
 				)
-				lastErr = result.err
+				heldErr = result.err
 				continue
 			}
 
@@ -135,7 +206,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			if !idempotent {
 				// Single-shot: return whatever happened. Retrying on a non-
 				// idempotent method risks replaying side effects.
-				return resp, err
+				return tierResult{resp: resp, err: err, final: true}
 			}
 
 			if err != nil {
@@ -148,11 +219,8 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				// err is non-nil (the spec only requires resp == nil when
 				// err == nil for the success direction). Drain + close
 				// defensively so we don't leak the body / connection.
-				if resp != nil {
-					_, _ = io.Copy(io.Discard, resp.Body)
-					_ = resp.Body.Close()
-				}
-				lastErr = err
+				drainAndClose(resp)
+				heldErr = err
 				continue
 			}
 
@@ -165,42 +233,44 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 					"method", req.Method,
 					"status", resp.StatusCode,
 				)
-				if lastResp != nil {
-					_, _ = io.Copy(io.Discard, lastResp.Body)
-					_ = lastResp.Body.Close()
-				}
-				lastResp = resp
-				lastErr = fmt.Errorf("transport %s: http status %d", result.name, resp.StatusCode)
+				drainAndClose(heldResp)
+				heldResp = resp
+				heldErr = fmt.Errorf("transport %s: http status %d", result.name, resp.StatusCode)
 				continue
 			}
 
 			// 2xx, 3xx, or 4xx on an idempotent method: 4xx is the server's
 			// verdict on the request itself, retry won't help. Return.
-			if lastResp != nil {
-				_, _ = io.Copy(io.Discard, lastResp.Body)
-				_ = lastResp.Body.Close()
-			}
-			return resp, nil
+			drainAndClose(heldResp)
+			return tierResult{resp: resp, final: true}
 
 		case <-ctx.Done():
-			if lastResp != nil {
-				return lastResp, nil
+			// Budget spent. Hand back whatever this tier held (if anything) as
+			// non-final so RoundTrip can prefer it or an earlier tier's
+			// fallback; RoundTrip stops iterating because ctx is now done.
+			err := heldErr
+			if err != nil {
+				err = fmt.Errorf("timed out, last error: %w", err)
+			} else if heldResp == nil {
+				err = ctx.Err()
 			}
-			if lastErr != nil {
-				return nil, fmt.Errorf("timed out, last error: %w", lastErr)
-			}
-			return nil, ctx.Err()
+			return tierResult{resp: heldResp, err: err}
 		}
 	}
 
-	// All transports exhausted.
-	if lastResp != nil {
-		return lastResp, nil
+	// Tier exhausted without a usable response; bubble up the best fallback so
+	// RoundTrip can try the next tier (or return it if none succeed).
+	return tierResult{resp: heldResp, err: heldErr}
+}
+
+// drainAndClose drains and closes a response body so the connection can be
+// reused and nothing leaks. Safe to call with a nil response or nil body.
+func drainAndClose(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
 	}
-	if lastErr != nil {
-		return nil, fmt.Errorf("all transports failed: %w", lastErr)
-	}
-	return nil, errors.New("no transports produced a response")
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 }
 
 // isRetryableMethod reports whether requests with this method are safe to
@@ -240,6 +310,46 @@ func (t *raceTransport) connect(ctx context.Context, tr Transport, addr string, 
 		return
 	}
 	results <- connectResult{rt: rt, name: tr.Name()}
+}
+
+// transportPriority is an optional interface a Transport may implement to
+// influence race ordering. Transports are grouped into tiers by ascending
+// priority, and a tier is raced only after every transport in all
+// lower-numbered tiers has failed to produce a usable response. A transport
+// that does not implement it is treated as priority 0 (raced first). Lower
+// numbers race earlier; reserve higher numbers for slow fallbacks.
+type transportPriority interface {
+	Priority() int
+}
+
+// priorityOf reports a transport's race priority, defaulting to 0 for
+// transports that do not implement transportPriority.
+func priorityOf(tr Transport) int {
+	if p, ok := tr.(transportPriority); ok {
+		return p.Priority()
+	}
+	return priorityDefault
+}
+
+// groupByPriority splits transports into tiers ordered by ascending priority.
+// Transports within a tier race in parallel; tiers are tried in order. Input
+// order is preserved within each tier.
+func groupByPriority(transports []Transport) [][]Transport {
+	byPriority := make(map[int][]Transport)
+	var priorities []int
+	for _, tr := range transports {
+		p := priorityOf(tr)
+		if _, seen := byPriority[p]; !seen {
+			priorities = append(priorities, p)
+		}
+		byPriority[p] = append(byPriority[p], tr)
+	}
+	sort.Ints(priorities)
+	tiers := make([][]Transport, 0, len(priorities))
+	for _, p := range priorities {
+		tiers = append(tiers, byPriority[p])
+	}
+	return tiers
 }
 
 // filterTransports returns only the transports eligible for this request,

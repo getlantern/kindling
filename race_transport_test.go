@@ -26,6 +26,7 @@ type mockTransport struct {
 	isStreamable    bool
 	maxLength       int
 	reqTimeout      time.Duration
+	priority        int
 	newRoundTripper func(ctx context.Context, addr string) (http.RoundTripper, error)
 }
 
@@ -33,6 +34,7 @@ func (m *mockTransport) Name() string                  { return m.name }
 func (m *mockTransport) IsStreamable() bool            { return m.isStreamable }
 func (m *mockTransport) MaxLength() int                { return m.maxLength }
 func (m *mockTransport) RequestTimeout() time.Duration { return m.reqTimeout }
+func (m *mockTransport) Priority() int                 { return m.priority }
 func (m *mockTransport) NewRoundTripper(ctx context.Context, addr string) (http.RoundTripper, error) {
 	return m.newRoundTripper(ctx, addr)
 }
@@ -505,6 +507,47 @@ func TestIsRetryableMethod(t *testing.T) {
 	}
 }
 
+func TestGroupByPriority(t *testing.T) {
+	t.Parallel()
+
+	t.Run("AllDefault_SingleTier", func(t *testing.T) {
+		t.Parallel()
+		in := []Transport{&mockTransport{name: "a"}, &mockTransport{name: "b"}}
+		tiers := groupByPriority(in)
+		require.Len(t, tiers, 1)
+		assert.Equal(t, []string{"a", "b"}, names(tiers[0]),
+			"a single default tier must preserve input order")
+	})
+
+	t.Run("OrdersTiersAscending_PreservesIntraTierOrder", func(t *testing.T) {
+		t.Parallel()
+		in := []Transport{
+			&mockTransport{name: "dnstt", priority: priorityLastResort},
+			&mockTransport{name: "domainfront"},
+			&mockTransport{name: "amp"},
+			&mockTransport{name: "mid", priority: 50},
+		}
+		tiers := groupByPriority(in)
+		require.Len(t, tiers, 3)
+		assert.Equal(t, []string{"domainfront", "amp"}, names(tiers[0]), "default tier first, input order preserved")
+		assert.Equal(t, []string{"mid"}, names(tiers[1]), "priority 50 in the middle")
+		assert.Equal(t, []string{"dnstt"}, names(tiers[2]), "last-resort tier last")
+	})
+
+	t.Run("Empty", func(t *testing.T) {
+		t.Parallel()
+		assert.Empty(t, groupByPriority(nil))
+	})
+}
+
+func names(transports []Transport) []string {
+	out := make([]string, len(transports))
+	for i, tr := range transports {
+		out[i] = tr.Name()
+	}
+	return out
+}
+
 type errorRoundTripper struct{ err error }
 
 func (e errorRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
@@ -668,6 +711,264 @@ func TestRaceTransport_ConnectFailure_DoesFallBack(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, int64(1), secondHits.Load(),
 		"connect failure on the first transport must fall back to the second — no body has been transmitted")
+}
+
+// A last-resort transport (higher Priority) must not even be dialed while a
+// default-tier transport can serve the request. This is the whole point of
+// reserving slow fallbacks like DNS tunneling: they shouldn't compete on equal
+// footing with the fast transports.
+func TestRaceTransport_LastResort_NotDialedWhenDefaultSucceeds(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	var lastResortDialed atomic.Bool
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			&mockTransport{
+				name: "default",
+				newRoundTripper: func(_ context.Context, _ string) (http.RoundTripper, error) {
+					return server.Client().Transport, nil
+				},
+			},
+			&mockTransport{
+				name:     "last-resort",
+				priority: priorityLastResort,
+				newRoundTripper: func(_ context.Context, _ string) (http.RoundTripper, error) {
+					lastResortDialed.Store(true)
+					return server.Client().Transport, nil
+				},
+			},
+		},
+	)
+
+	req, err := http.NewRequest("GET", server.URL, nil)
+	require.NoError(t, err)
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.False(t, lastResortDialed.Load(),
+		"last-resort transport must not be dialed while the default tier succeeds")
+}
+
+// When every default-tier transport fails to produce a usable response, the
+// race must fall back to the last-resort tier — and only then dial it.
+func TestRaceTransport_LastResort_UsedWhenDefaultFails(t *testing.T) {
+	t.Parallel()
+
+	var lastResortHits atomic.Int64
+	lastResortSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		lastResortHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer lastResortSrv.Close()
+
+	// dialSeq records the order in which transports are dialed so we can assert
+	// the last-resort tier is only reached after the default tier.
+	var dialSeq atomic.Int64
+	var defaultDialOrder, lastResortDialOrder atomic.Int64
+
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			&mockTransport{
+				name: "default",
+				newRoundTripper: func(_ context.Context, _ string) (http.RoundTripper, error) {
+					defaultDialOrder.Store(dialSeq.Add(1))
+					return nil, errors.New("connect refused")
+				},
+			},
+			&mockTransport{
+				name:     "last-resort",
+				priority: priorityLastResort,
+				newRoundTripper: func(_ context.Context, _ string) (http.RoundTripper, error) {
+					lastResortDialOrder.Store(dialSeq.Add(1))
+					return &urlRewritingTransport{target: lastResortSrv.URL}, nil
+				},
+			},
+		},
+	)
+
+	req, err := http.NewRequest("GET", "http://example.com/anything", nil)
+	require.NoError(t, err)
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, int64(1), lastResortHits.Load(), "last-resort transport should have served the request")
+	assert.Equal(t, int64(1), defaultDialOrder.Load(), "default tier should be dialed first")
+	assert.Equal(t, int64(2), lastResortDialOrder.Load(), "last-resort tier should be dialed only after the default tier")
+}
+
+// A 5xx from the default tier is a retryable failure, so the race must still
+// fall through to the last-resort tier rather than returning the 5xx while a
+// working fallback exists.
+func TestRaceTransport_LastResort_UsedWhenDefaultReturns5xx(t *testing.T) {
+	t.Parallel()
+
+	defaultSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	}))
+	defer defaultSrv.Close()
+
+	var lastResortHits atomic.Int64
+	lastResortSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		lastResortHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer lastResortSrv.Close()
+
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			redirectTransport("default", defaultSrv.URL),
+			&mockTransport{
+				name:     "last-resort",
+				priority: priorityLastResort,
+				newRoundTripper: func(_ context.Context, _ string) (http.RoundTripper, error) {
+					return &urlRewritingTransport{target: lastResortSrv.URL}, nil
+				},
+			},
+		},
+	)
+
+	req, err := http.NewRequest("GET", "http://example.com/anything", nil)
+	require.NoError(t, err)
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, int64(1), lastResortHits.Load(),
+		"a retryable 5xx in the default tier should fall through to the last-resort tier")
+}
+
+// A usable (held) 5xx from an earlier tier must survive a later tier timing
+// out: the request budget is shared, so when the last-resort tier can't beat
+// the deadline we should still return the earlier tier's response rather than
+// a bare context-deadline error.
+func TestRaceTransport_LastResort_TimeoutKeepsEarlierTier5xx(t *testing.T) {
+	t.Parallel()
+
+	defaultSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	}))
+	defer defaultSrv.Close()
+
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			redirectTransport("default", defaultSrv.URL),
+			&mockTransport{
+				name:     "last-resort",
+				priority: priorityLastResort,
+				newRoundTripper: func(ctx context.Context, _ string) (http.RoundTripper, error) {
+					// Never connects within the deadline.
+					<-ctx.Done()
+					return nil, ctx.Err()
+				},
+			},
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://example.com/anything", nil)
+	require.NoError(t, err)
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err, "must surface the earlier tier's 5xx, not the timeout error")
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+}
+
+// A non-idempotent request whose entire default tier fails to *connect* may
+// safely fall through to the last-resort tier: no body has crossed the wire,
+// so there is no replay risk. This is the one path that replays a POST body on
+// a later tier.
+func TestRaceTransport_LastResort_NonIdempotentFallsThroughOnConnectFailure(t *testing.T) {
+	t.Parallel()
+
+	var lastResortHits atomic.Int64
+	lastResortSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		lastResortHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer lastResortSrv.Close()
+
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			&mockTransport{
+				name: "default",
+				newRoundTripper: func(_ context.Context, _ string) (http.RoundTripper, error) {
+					return nil, errors.New("connect refused")
+				},
+			},
+			&mockTransport{
+				name:     "last-resort",
+				priority: priorityLastResort,
+				newRoundTripper: func(_ context.Context, _ string) (http.RoundTripper, error) {
+					return &urlRewritingTransport{target: lastResortSrv.URL}, nil
+				},
+			},
+		},
+	)
+
+	req, err := http.NewRequest("POST", "http://example.com/anything", strings.NewReader(`{}`))
+	require.NoError(t, err)
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, int64(1), lastResortHits.Load(),
+		"a connection failure carries no replay risk, so a non-idempotent request may fall through to the last-resort tier")
+}
+
+// A 5xx on a non-idempotent request is single-shot: it must be returned as-is,
+// NOT retried on the last-resort tier, because the body already crossed the
+// wire and the server may have applied a side effect. Contrast with the
+// idempotent case in TestRaceTransport_LastResort_UsedWhenDefaultReturns5xx.
+func TestRaceTransport_LastResort_NonIdempotent5xxIsSingleShot(t *testing.T) {
+	t.Parallel()
+
+	defaultSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+	}))
+	defer defaultSrv.Close()
+
+	var lastResortDialed atomic.Bool
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			redirectTransport("default", defaultSrv.URL),
+			&mockTransport{
+				name:     "last-resort",
+				priority: priorityLastResort,
+				newRoundTripper: func(_ context.Context, _ string) (http.RoundTripper, error) {
+					lastResortDialed.Store(true)
+					return &urlRewritingTransport{target: defaultSrv.URL}, nil
+				},
+			},
+		},
+	)
+
+	req, err := http.NewRequest("POST", "http://example.com/anything", strings.NewReader(`{}`))
+	require.NoError(t, err)
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode, "non-idempotent 5xx is returned as-is")
+	assert.False(t, lastResortDialed.Load(),
+		"a non-idempotent 5xx must not fall through to the last-resort tier — replay risk")
 }
 
 // redirectTransport returns a Transport whose RoundTripper rewrites the
