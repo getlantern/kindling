@@ -10,6 +10,12 @@ The techniques integrated include:
 
 The idea is to continually add more techniques as they become available such that all tools have access to the most robust library possible for getting on the network quickly and reliably.
 
+## Transport racing and priorities
+
+Kindling races the configured transports against each other and returns the first usable response. Transports race in priority tiers: every transport in the default tier connects in parallel, and a lower-priority tier is dialed only once every transport in the higher-priority tiers has failed to produce a usable response.
+
+DNS tunneling (`WithDNSTunnel`) is registered as a **last resort**. It keeps working under heavy censorship but is slow and low-throughput, so it is only dialed when the faster transports (domain fronting, proxyless dialing, AMP caching) are all blocked. Custom transports added via `WithTransport` default to the top tier; a transport can opt into a later tier by implementing `Priority() int` (higher numbers race later).
+
 ## Example
 
 ```go
