@@ -21,7 +21,6 @@ import (
 
 const strategyTestServerName = "smart-dialer-config-test"
 
-// embeddedStrategies returns the tls strategy list from smart_dialer_config.yml.
 func embeddedStrategies(t *testing.T) []string {
 	t.Helper()
 	raw, err := configFS.ReadFile("smart_dialer_config.yml")
@@ -31,14 +30,14 @@ func embeddedStrategies(t *testing.T) []string {
 		TLS []string `yaml:"tls"`
 	}
 	require.NoError(t, yaml.Unmarshal(raw, &cfg))
-	// Without this the range below would pass by iterating over nothing.
+	// An empty list would make the caller's loop pass vacuously.
 	require.NotEmpty(t, cfg.TLS, "the embedded config lists no tls strategy")
 	return cfg.TLS
 }
 
 // newStrategyTestServer returns a TLS listener's address and a pool trusting its
-// self-signed certificate. Strategies rewrite the stream around TLS record and
-// byte offsets, so exercising them needs a real ClientHello.
+// self-signed certificate. Strategies rewrite the stream around TLS records and
+// write boundaries, so exercising them needs a real ClientHello.
 func newStrategyTestServer(t *testing.T) (string, *x509.CertPool) {
 	t.Helper()
 
@@ -84,10 +83,7 @@ func newStrategyTestServer(t *testing.T) (string, *x509.CertPool) {
 //
 // A strategy that cannot dial at all is invisible in production: the finder
 // races the list and discards whatever fails, so a misspelled entry costs a
-// circumvention technique while everything still appears to work. That is how
-// `split:200|disorder:1` survived — configurl chains left to right, making
-// disorder the outermost wrapper, and disorder type-asserts its inner conn to
-// *net.TCPConn, which the split wrapper underneath it never is.
+// circumvention technique while everything still appears to work.
 func TestEmbeddedStrategiesDial(t *testing.T) {
 	t.Parallel()
 
