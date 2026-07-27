@@ -29,5 +29,10 @@ tls:
   - "" # Direct dialer
   - split:1 # TCP stream split at position 1
   - split:2,20*5 # TCP stream split at position 2, followed by 20 blocks of length 5.
-  - split:200|disorder:1 # TCP stream split at position 1, and send the second packet (packet #1) with zero TTL at first.
+  # Split at 200, and send the first packet with a TTL too low to reach the
+  # server so it has to be retransmitted out of order. disorder must come first:
+  # configurl pipes left to right, so the rightmost entry is outermost, and
+  # disorder type-asserts its inner conn to *net.TCPConn — which only the base
+  # dialer returns. Spelled the other way round it never dials.
+  - disorder:1|split:200
   - tlsfrag:1 # TLS Record Fragmentation at position 1
