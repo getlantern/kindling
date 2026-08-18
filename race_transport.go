@@ -140,7 +140,16 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			heldResp = res.resp
 		}
 		if res.err != nil {
-			heldErr = res.err
+			// Across tiers for the same reason as within one. A budget that
+			// expires mid-race returns heldErr alone, so assigning here meant a
+			// timeout was reported as a single strategy's failure while every
+			// other tier's reason — fronted, dnstt, direct — was discarded. That
+			// is what made a smart-dial DNS timeout look like the cause of a
+			// lookup that in fact had several independent failures.
+			//
+			// Joining also fixes errors.Is: a sentinel raised by any tier is now
+			// detectable, where before only the last tier's was.
+			heldErr = errors.Join(heldErr, res.err)
 		}
 		if ctx.Err() != nil {
 			// The request's time budget is shared across tiers; once it's
@@ -157,7 +166,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if ctx.Err() != nil {
 		// The budget ran out before a later tier could be tried, so the
 		// transports were not all exhausted. heldErr already conveys the
-		// timeout (raceTier sets it to a "timed out, last error" wrap or
+		// timeout (raceTier sets it to a "timed out, transport errors" wrap or
 		// ctx.Err()); surface it directly rather than claiming every
 		// transport failed.
 		if heldErr != nil {
@@ -209,7 +218,13 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 					"name", result.name,
 					"error", result.err,
 				)
-				heldErr = result.err
+				// Joined, not assigned, and named. Transports in a tier race
+				// concurrently, so assigning kept only whichever lost last and
+				// silently dropped its siblings — and the name lived in
+				// connectResult rather than in the error, so even the survivor
+				// was unattributable unless its own text happened to say which
+				// strategy produced it.
+				heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", result.name, result.err))
 				continue
 			}
 
@@ -220,6 +235,15 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 			if !idempotent {
 				// Single-shot: return whatever happened. Retrying on a non-
 				// idempotent method risks replaying side effects.
+				//
+				// Named here too, because this branch returns before the
+				// attribution below and POST is exactly where it matters: the
+				// registration call that motivated naming these errors is a
+				// POST, so without this the one path under investigation was
+				// the one path still returning an unattributed error.
+				if err != nil {
+					err = fmt.Errorf("transport %s: %w", result.name, err)
+				}
 				return tierResult{resp: resp, err: err, final: true}
 			}
 
@@ -234,7 +258,7 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 				// err == nil for the success direction). Drain + close
 				// defensively so we don't leak the body / connection.
 				drainAndClose(resp)
-				heldErr = err
+				heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", result.name, err))
 				continue
 			}
 
@@ -249,7 +273,7 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 				)
 				drainAndClose(heldResp)
 				heldResp = resp
-				heldErr = fmt.Errorf("transport %s: http status %d", result.name, resp.StatusCode)
+				heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: http status %d", result.name, resp.StatusCode))
 				continue
 			}
 
@@ -262,9 +286,33 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 			// Budget spent. Hand back whatever this tier held (if anything) as
 			// non-final so RoundTrip can prefer it or an earlier tier's
 			// fallback; RoundTrip stops iterating because ctx is now done.
+			//
+			// Drain first. select chooses uniformly when several cases are
+			// ready, so a connectResult that has already landed can be passed
+			// over in favour of this branch and its error lost — which defeats
+			// the errors.Is guarantee precisely when a transport failed fast
+			// and the budget expired at about the same moment.
+			//
+			// Non-blocking, and deliberately no RoundTrip on anything drained:
+			// the budget is gone, so a transport that connected is not worth
+			// sending a request through. Only its failure, if any, is news.
+		drain:
+			for {
+				select {
+				case r := <-results:
+					if r.err != nil {
+						heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", r.name, r.err))
+					}
+				default:
+					break drain
+				}
+			}
+
 			err := heldErr
 			if err != nil {
-				err = fmt.Errorf("timed out, last error: %w", err)
+				// Not "last error" any more: heldErr carries every failure this
+				// tier collected, so naming one would misdescribe the rest.
+				err = fmt.Errorf("timed out, transport errors: %w", err)
 			} else if heldResp == nil {
 				err = ctx.Err()
 			}

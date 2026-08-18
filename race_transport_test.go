@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -1213,4 +1214,138 @@ func TestRequestTimeout(t *testing.T) {
 		// budget comes from the eligible "fast" transport instead.
 		assert.Equal(t, 4*time.Minute, rt.requestTimeout(req, eligible))
 	})
+}
+
+// Every transport's failure must survive, not just whichever lost last.
+//
+// Transports in a tier race concurrently and tiers run in sequence, and both
+// loops used to assign heldErr rather than accumulate it. So a caller saw one
+// strategy's error and had no way to know the others had even been tried — which
+// is how a smart-dial DNS timeout came to look like the cause of a lookup that
+// actually had three independent failures.
+func TestRaceTransport_JoinsEveryTransportError(t *testing.T) {
+	t.Parallel()
+
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			&mockTransport{
+				name: "fast-a", priority: 1,
+				newRoundTripper: func(ctx context.Context, addr string) (http.RoundTripper, error) {
+					return nil, errors.New("dns timeout")
+				},
+			},
+			&mockTransport{
+				name: "fast-b", priority: 1,
+				newRoundTripper: func(ctx context.Context, addr string) (http.RoundTripper, error) {
+					return nil, errors.New("connection refused")
+				},
+			},
+			// A separate tier, so this one is only dialed after the first tier
+			// is exhausted — the across-tier path rather than the within-tier one.
+			&mockTransport{
+				name: "slow-c", priority: 2,
+				newRoundTripper: func(ctx context.Context, addr string) (http.RoundTripper, error) {
+					return nil, errors.New("tls handshake failure")
+				},
+			},
+		},
+	)
+
+	req, err := http.NewRequest("GET", "http://example.com", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.Error(t, err)
+
+	for _, want := range []string{
+		"dns timeout", "connection refused", "tls handshake failure",
+	} {
+		assert.Contains(t, err.Error(), want, "a transport's failure was dropped")
+	}
+	// And each is attributable. The transport name lived only in connectResult,
+	// so before this the joined text could not say which strategy failed how.
+	for _, want := range []string{"fast-a", "fast-b", "slow-c"} {
+		assert.Contains(t, err.Error(), want, "the failing transport is not named")
+	}
+}
+
+// errors.Is must reach a sentinel raised by ANY transport, not only the last.
+// Callers classify on these — "was this a lack of connectivity or interference?"
+// — and that question cannot be answered from one arbitrary survivor.
+func TestRaceTransport_ErrorsIsFindsAnyTransportsSentinel(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("no route to host")
+
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			&mockTransport{
+				name: "first", priority: 1,
+				newRoundTripper: func(ctx context.Context, addr string) (http.RoundTripper, error) {
+					return nil, fmt.Errorf("dialing: %w", sentinel)
+				},
+			},
+			// Fails later and in a different way, so before joining it was this
+			// error alone that reached the caller and the sentinel was lost.
+			&mockTransport{
+				name: "last", priority: 2,
+				newRoundTripper: func(ctx context.Context, addr string) (http.RoundTripper, error) {
+					return nil, errors.New("something else entirely")
+				},
+			},
+		},
+	)
+
+	req, err := http.NewRequest("GET", "http://example.com", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sentinel,
+		"a sentinel from a non-final transport must still be detectable")
+}
+
+// A non-idempotent method returns from the single-shot branch, before the
+// attribution the other paths get. POST is where that matters most: the peer
+// registration call that motivated naming these errors is a POST, so without
+// this the one request under investigation was the one still returning an
+// unattributed error.
+func TestRaceTransport_NamesTransportOnNonIdempotentFailure(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Hijack and close without responding, so RoundTrip fails rather than
+		// returning a status.
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("server does not support hijacking")
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		conn.Close()
+	}))
+	defer server.Close()
+
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			&mockTransport{
+				name: "only-one",
+				newRoundTripper: func(ctx context.Context, addr string) (http.RoundTripper, error) {
+					return http.DefaultTransport, nil
+				},
+			},
+		},
+	)
+
+	req, err := http.NewRequest("POST", server.URL, strings.NewReader("body"))
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only-one",
+		"a POST failure must still say which transport produced it")
 }
