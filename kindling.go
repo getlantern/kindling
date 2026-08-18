@@ -114,9 +114,10 @@ var _ Kindling = (*kindling)(nil)
 
 // NewKindling creates a Kindling instance with the given application name and
 // options. Returns an error if any option fails synchronously (e.g. a nil
-// transport argument). Deferred initialization failures (such as a failed smart
-// dialer in WithProxyless) are logged as warnings and are only fatal when they
-// leave Kindling with no usable transports.
+// transport argument). Deferred initialization failures are logged as warnings
+// and are only fatal when they leave Kindling with no usable transports. No
+// option does live network work here: WithProxyless registers its transport
+// immediately and searches for a strategy on the first dial.
 func NewKindling(name string, options ...Option) (Kindling, error) {
 	k := &kindling{
 		appName:   name,
@@ -337,13 +338,19 @@ func WithAMPCache(c amp.Client) Option {
 // constructed after every other option has run, so WithStreamDialer /
 // WithPacketDialer take effect regardless of the order callers pass them
 // to NewKindling.
+//
+// The strategy search runs on the first dial, not during NewKindling: it is
+// live network probing that reached ~3.5s on a censored network, stalling
+// callers that start under a deadline (getlantern/engineering#3822).
 func WithProxyless(domains ...string) Option {
 	return func(k *kindling) error {
+		if len(domains) == 0 {
+			return fmt.Errorf("no proxyless domains")
+		}
 		k.deferred = append(k.deferred, func() error {
-			dialer, err := newSmartDialerFn(k.logWriter, k.smartDialerConfig, k.streamDialer, k.packetDialer, domains...)
-			if err != nil {
-				return fmt.Errorf("creating smart dialer: %w", err)
-			}
+			dialer := newLazySmartDialer(
+				k.logWriter, k.smartDialerConfig, k.streamDialer, k.packetDialer, domains,
+			)
 			k.transports = append(k.transports, &namedTransport{
 				name:         string(TransportSmart),
 				isStreamable: true,
@@ -396,8 +403,10 @@ var newSmartDialerFn = newSmartDialer
 // strategy spec; nil reads the embedded default. stream / packet are the
 // base dialers the strategy probes against; either may be nil, in which
 // case the stdlib-backed transport.TCPDialer / transport.UDPDialer are
-// used.
+// used. ctx bounds the strategy search itself, which the Outline finder
+// otherwise limits only per probe.
 func newSmartDialer(
+	ctx context.Context,
 	logWriter io.Writer,
 	config []byte,
 	stream transport.StreamDialer,
@@ -424,7 +433,7 @@ func newSmartDialer(
 		StreamDialer: stream,
 		PacketDialer: packet,
 	}
-	return finder.NewDialer(context.Background(), domains, configBytes)
+	return finder.NewDialer(ctx, domains, configBytes)
 }
 
 // preconnectedTransport creates an http.Transport that uses an already-established
@@ -482,7 +491,9 @@ func NewSmartHTTPTransportWithConfig(
 	if config != nil && len(config) == 0 {
 		return nil, fmt.Errorf("smart dialer config is empty")
 	}
-	dialer, err := newSmartDialerFn(logWriter, config, stream, packet, domains...)
+	searchCtx, cancel := context.WithTimeout(context.Background(), smartSearchTimeout)
+	defer cancel()
+	dialer, err := newSmartDialerFn(searchCtx, logWriter, config, stream, packet, domains...)
 	if err != nil {
 		return nil, err
 	}
