@@ -3,6 +3,7 @@ package kindling
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -53,15 +54,18 @@ func stubSearch(t *testing.T, fn func(domain string) (transport.StreamDialer, er
 	t.Helper()
 	orig := newSmartDialerFn
 	newSmartDialerFn = func(
-		ctx context.Context,
+		_ context.Context,
 		_ io.Writer,
 		_ []byte,
 		_ transport.StreamDialer,
 		_ transport.PacketDialer,
 		domains ...string,
 	) (transport.StreamDialer, error) {
+		// An error rather than t.Errorf and a fallthrough: indexing domains[0]
+		// on an empty slice would panic and bury whatever really went wrong.
 		if len(domains) != 1 {
-			t.Errorf("search domains = %v; want exactly one (searches are per domain)", domains)
+			return nil, fmt.Errorf("search got %d domains, want exactly 1 (searches are per domain): %v",
+				len(domains), domains)
 		}
 		return fn(domains[0])
 	}
@@ -167,17 +171,23 @@ func TestWithProxyless_SearchIsSingleFlight(t *testing.T) {
 	}
 
 	const dialers = 8
+	dispatched := make(chan struct{}, dialers)
 	var wg sync.WaitGroup
 	errs := make([]error, dialers)
 	for i := range dialers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			dispatched <- struct{}{}
 			errs[i] = dialSmart(t, k, "example.com:443")
 		}()
 	}
-	// Let every dial arrive while the one search is still running.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for every dial to be dispatched rather than sleeping a fixed span.
+	// The assertion holds either way: a dial that lands after the search has
+	// finished gets the cached dialer, so it still starts no second search.
+	for range dialers {
+		<-dispatched
+	}
 	close(release)
 	wg.Wait()
 
