@@ -235,6 +235,15 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 			if !idempotent {
 				// Single-shot: return whatever happened. Retrying on a non-
 				// idempotent method risks replaying side effects.
+				//
+				// Named here too, because this branch returns before the
+				// attribution below and POST is exactly where it matters: the
+				// registration call that motivated naming these errors is a
+				// POST, so without this the one path under investigation was
+				// the one path still returning an unattributed error.
+				if err != nil {
+					err = fmt.Errorf("transport %s: %w", result.name, err)
+				}
 				return tierResult{resp: resp, err: err, final: true}
 			}
 
@@ -277,6 +286,28 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 			// Budget spent. Hand back whatever this tier held (if anything) as
 			// non-final so RoundTrip can prefer it or an earlier tier's
 			// fallback; RoundTrip stops iterating because ctx is now done.
+			//
+			// Drain first. select chooses uniformly when several cases are
+			// ready, so a connectResult that has already landed can be passed
+			// over in favour of this branch and its error lost — which defeats
+			// the errors.Is guarantee precisely when a transport failed fast
+			// and the budget expired at about the same moment.
+			//
+			// Non-blocking, and deliberately no RoundTrip on anything drained:
+			// the budget is gone, so a transport that connected is not worth
+			// sending a request through. Only its failure, if any, is news.
+		drain:
+			for {
+				select {
+				case r := <-results:
+					if r.err != nil {
+						heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", r.name, r.err))
+					}
+				default:
+					break drain
+				}
+			}
+
 			err := heldErr
 			if err != nil {
 				// Not "last error" any more: heldErr carries every failure this

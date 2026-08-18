@@ -1304,3 +1304,48 @@ func TestRaceTransport_ErrorsIsFindsAnyTransportsSentinel(t *testing.T) {
 	assert.ErrorIs(t, err, sentinel,
 		"a sentinel from a non-final transport must still be detectable")
 }
+
+// A non-idempotent method returns from the single-shot branch, before the
+// attribution the other paths get. POST is where that matters most: the peer
+// registration call that motivated naming these errors is a POST, so without
+// this the one request under investigation was the one still returning an
+// unattributed error.
+func TestRaceTransport_NamesTransportOnNonIdempotentFailure(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Hijack and close without responding, so RoundTrip fails rather than
+		// returning a status.
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("server does not support hijacking")
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		conn.Close()
+	}))
+	defer server.Close()
+
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			&mockTransport{
+				name: "only-one",
+				newRoundTripper: func(ctx context.Context, addr string) (http.RoundTripper, error) {
+					return http.DefaultTransport, nil
+				},
+			},
+		},
+	)
+
+	req, err := http.NewRequest("POST", server.URL, strings.NewReader("body"))
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only-one",
+		"a POST failure must still say which transport produced it")
+}
