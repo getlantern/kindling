@@ -118,15 +118,20 @@ func TestNewKindling(t *testing.T) {
 				var gotStream transport.StreamDialer
 				var gotPacket transport.PacketDialer
 				orig := newSmartDialerFn
-				newSmartDialerFn = func(_ io.Writer, _ []byte, s transport.StreamDialer, p transport.PacketDialer, _ ...string) (transport.StreamDialer, error) {
+				newSmartDialerFn = func(_ context.Context, _ io.Writer, _ []byte, s transport.StreamDialer, p transport.PacketDialer, _ ...string) (transport.StreamDialer, error) {
 					gotStream, gotPacket = s, p
-					return stubStreamDialer{}, nil
+					return dialedStreamDialer{}, nil
 				}
 				t.Cleanup(func() { newSmartDialerFn = orig })
 
 				k, err := NewKindling("test", tc.opts...)
 				if err != nil {
 					t.Fatalf("NewKindling() error = %v", err)
+				}
+				// The search is lazy, so the dialers reach it only once
+				// something dials.
+				if err := dialSmart(t, k, "example.com:443"); !errors.Is(err, errStubDialed) {
+					t.Fatalf("dial error = %v; want %v", err, errStubDialed)
 				}
 				if gotStream != stream {
 					t.Errorf("newSmartDialer stream arg = %v; want %v", gotStream, stream)
@@ -142,46 +147,45 @@ func TestNewKindling(t *testing.T) {
 		}
 	})
 
-	// A deferred (proxyless) init failure must not sink the whole instance
-	// when another transport is configured: kindling degrades to the working
-	// transports rather than failing construction.
-	t.Run("ProxylessFails_OtherTransportSurvives", func(t *testing.T) {
-		orig := newSmartDialerFn
-		newSmartDialerFn = func(_ io.Writer, _ []byte, _ transport.StreamDialer, _ transport.PacketDialer, _ ...string) (transport.StreamDialer, error) {
+	// A failed strategy search no longer removes the transport at construction:
+	// the search is lazy, so the failure surfaces on the dial that triggered it
+	// and leaves every other transport untouched.
+	t.Run("ProxylessSearchFails_SurfacesOnDial", func(t *testing.T) {
+		stubSearch(t, func(string) (transport.StreamDialer, error) {
 			return nil, errors.New("probe failed")
-		}
-		t.Cleanup(func() { newSmartDialerFn = orig })
+		})
 
 		k, err := NewKindling("test",
 			WithTransport(&namedTransport{name: "stub"}),
 			WithProxyless("example.com"),
 		)
 		if err != nil {
-			t.Fatalf("NewKindling() error = %v; want nil when a non-proxyless transport remains", err)
+			t.Fatalf("NewKindling() error = %v; want nil", err)
 		}
 		ki := k.(*kindling)
-		if len(ki.transports) != 1 || ki.transports[0].Name() != "stub" {
-			t.Errorf("transports = %v; want only the surviving %q transport", ki.transports, "stub")
+		if len(ki.transports) != 2 {
+			t.Fatalf("transports = %v; want the stub plus the proxyless transport", ki.transports)
+		}
+		if err := dialSmart(t, k, "example.com:443"); err == nil || !strings.Contains(err.Error(), "probe failed") {
+			t.Errorf("dial error = %v; want it to wrap the search failure", err)
 		}
 	})
 
-	// When the only configured transport is proxyless and its deferred init
-	// fails, kindling has zero usable transports and must surface that at
-	// construction rather than deferring a "no eligible transports" error to
-	// the first request.
-	t.Run("ProxylessFails_NoOtherTransport_ReturnsError", func(t *testing.T) {
-		orig := newSmartDialerFn
-		newSmartDialerFn = func(_ io.Writer, _ []byte, _ transport.StreamDialer, _ transport.PacketDialer, _ ...string) (transport.StreamDialer, error) {
+	// A proxyless-only instance whose search fails now constructs successfully
+	// and reports the failure per dial. That is the point of deferring the
+	// search: a domain blocked at first contact recovers on a later dial
+	// instead of forcing the caller to rebuild kindling.
+	t.Run("ProxylessOnly_SearchFails_ConstructsAndFailsPerDial", func(t *testing.T) {
+		stubSearch(t, func(string) (transport.StreamDialer, error) {
 			return nil, errors.New("probe failed")
-		}
-		t.Cleanup(func() { newSmartDialerFn = orig })
+		})
 
-		_, err := NewKindling("test", WithProxyless("example.com"))
-		if err == nil {
-			t.Fatal("NewKindling() = nil error; want error when no transports remain")
+		k, err := NewKindling("test", WithProxyless("example.com"))
+		if err != nil {
+			t.Fatalf("NewKindling() error = %v; want construction to succeed", err)
 		}
-		if !strings.Contains(err.Error(), "probe failed") {
-			t.Errorf("error = %q; want it to wrap the underlying deferred failure", err)
+		if err := dialSmart(t, k, "example.com:443"); err == nil || !strings.Contains(err.Error(), "probe failed") {
+			t.Errorf("dial error = %v; want it to wrap the search failure", err)
 		}
 	})
 
@@ -207,14 +211,18 @@ func TestNewKindling(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				var gotCfg []byte
 				orig := newSmartDialerFn
-				newSmartDialerFn = func(_ io.Writer, cfg []byte, _ transport.StreamDialer, _ transport.PacketDialer, _ ...string) (transport.StreamDialer, error) {
+				newSmartDialerFn = func(_ context.Context, _ io.Writer, cfg []byte, _ transport.StreamDialer, _ transport.PacketDialer, _ ...string) (transport.StreamDialer, error) {
 					gotCfg = cfg
-					return stubStreamDialer{}, nil
+					return dialedStreamDialer{}, nil
 				}
 				t.Cleanup(func() { newSmartDialerFn = orig })
 
-				if _, err := NewKindling("test", tc.opts...); err != nil {
+				k, err := NewKindling("test", tc.opts...)
+				if err != nil {
 					t.Fatalf("NewKindling() error = %v", err)
+				}
+				if err := dialSmart(t, k, "example.com:443"); !errors.Is(err, errStubDialed) {
+					t.Fatalf("dial error = %v; want %v", err, errStubDialed)
 				}
 				if string(gotCfg) != string(customCfg) {
 					t.Errorf("newSmartDialer config arg = %q; want %q", gotCfg, customCfg)
@@ -248,7 +256,7 @@ func (s *stubDNSTT) NewRoundTripper(ctx context.Context, addr string) (http.Roun
 func (s *stubDNSTT) Close() error { return nil }
 
 func (s *stubDNSTT) RequestTimeout() time.Duration { return s.reqTimeout }
-func (s *stubDNSTT) MaxLength() int               { return s.maxLength }
+func (s *stubDNSTT) MaxLength() int                { return s.maxLength }
 
 func TestWithDNSTunnelOverrides(t *testing.T) {
 	t.Parallel()
@@ -332,7 +340,7 @@ func TestNewSmartHTTPTransportWithConfig(t *testing.T) {
 		var gotPacket transport.PacketDialer
 		var gotDomains []string
 		orig := newSmartDialerFn
-		newSmartDialerFn = func(_ io.Writer, cfg []byte, s transport.StreamDialer, p transport.PacketDialer, domains ...string) (transport.StreamDialer, error) {
+		newSmartDialerFn = func(_ context.Context, _ io.Writer, cfg []byte, s transport.StreamDialer, p transport.PacketDialer, domains ...string) (transport.StreamDialer, error) {
 			gotCfg, gotStream, gotPacket, gotDomains = cfg, s, p, domains
 			return stubStreamDialer{}, nil
 		}
@@ -359,7 +367,7 @@ func TestNewSmartHTTPTransportWithConfig(t *testing.T) {
 	t.Run("NilConfigUsesEmbedded", func(t *testing.T) {
 		var gotCfg []byte
 		orig := newSmartDialerFn
-		newSmartDialerFn = func(_ io.Writer, cfg []byte, _ transport.StreamDialer, _ transport.PacketDialer, _ ...string) (transport.StreamDialer, error) {
+		newSmartDialerFn = func(_ context.Context, _ io.Writer, cfg []byte, _ transport.StreamDialer, _ transport.PacketDialer, _ ...string) (transport.StreamDialer, error) {
 			gotCfg = cfg
 			return stubStreamDialer{}, nil
 		}
