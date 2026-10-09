@@ -185,7 +185,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // true, resp/err are exactly what RoundTrip should return — either a usable
 // response or a single-shot non-idempotent result. When final is false the
 // tier produced no usable response; resp holds the best fallback (a retryable
-// 5xx or 403) and err the last connection/request error, for RoundTrip to weigh
+// 5xx or 403) and err every connection/request error joined, for RoundTrip to weigh
 // against earlier tiers and carry into the next one. A timeout always reports
 // final=false so RoundTrip can still surface a usable response held by an
 // earlier tier; it stops iterating because the shared ctx is then done.

@@ -545,7 +545,9 @@ func TestRaceTransport_403_RetriedForIdempotent(t *testing.T) {
 func TestRaceTransport_403_ReturnedWhenAllTransports403(t *testing.T) {
 	t.Parallel()
 
+	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
 		http.Error(w, "forbidden", http.StatusForbidden)
 	}))
 	defer srv.Close()
@@ -564,6 +566,7 @@ func TestRaceTransport_403_ReturnedWhenAllTransports403(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Equal(t, int64(2), hits.Load(), "both transports must be tried before the 403 is returned")
 }
 
 // Non-idempotent requests stay single-shot even on 403.
