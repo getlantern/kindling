@@ -488,6 +488,123 @@ func TestRaceTransport_FourXX_NotRetried_EvenForGET(t *testing.T) {
 		"4xx on GET must not retry — the request, not the transport, is the problem")
 }
 
+// A 403 from one path (e.g. GFE refusing the client's country on the direct
+// route) must not win the race for an idempotent request.
+func TestRaceTransport_403_RetriedForIdempotent(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		header bool
+	}{
+		{"GET", http.MethodGet, false},
+		{"POST with IdempotentHeader", http.MethodPost, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var firstHits, secondHits atomic.Int64
+			first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				firstHits.Add(1)
+				http.Error(w, "Your client does not have permission", http.StatusForbidden)
+			}))
+			defer first.Close()
+			second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				secondHits.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer second.Close()
+
+			delayed, _ := delayedTransport("second", second.URL, 50*time.Millisecond)
+			rt := newRaceTransport("test", testLog, func(string) {},
+				[]Transport{
+					redirectTransport("first", first.URL),
+					delayed,
+				},
+			)
+
+			req, err := http.NewRequest(tc.method, "http://example.com/config-new", strings.NewReader(`{}`))
+			require.NoError(t, err)
+			if tc.header {
+				req.Header.Set(IdempotentHeader, "1")
+			}
+
+			resp, err := rt.RoundTrip(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			assert.Equal(t, http.StatusOK, resp.StatusCode, "403 (first) must fall back to 200 (second)")
+			assert.Equal(t, int64(1), firstHits.Load())
+			assert.Equal(t, int64(1), secondHits.Load())
+		})
+	}
+}
+
+// When every transport returns 403 the caller still gets the 403, not an error.
+func TestRaceTransport_403_ReturnedWhenAllTransports403(t *testing.T) {
+	t.Parallel()
+
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			redirectTransport("first", srv.URL),
+			redirectTransport("second", srv.URL),
+		},
+	)
+
+	req, err := http.NewRequest(http.MethodGet, "http://example.com/config-new", nil)
+	require.NoError(t, err)
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Equal(t, int64(2), hits.Load(), "both transports must be tried before the 403 is returned")
+}
+
+// Non-idempotent requests stay single-shot even on 403.
+func TestRaceTransport_403_NotRetriedForPOST(t *testing.T) {
+	t.Parallel()
+
+	var firstHits, secondHits atomic.Int64
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstHits.Add(1)
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer second.Close()
+
+	delayed, connected := delayedTransport("second", second.URL, 50*time.Millisecond)
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			redirectTransport("first", first.URL),
+			delayed,
+		},
+	)
+
+	req, err := http.NewRequest(http.MethodPost, "http://example.com/register", strings.NewReader(`{}`))
+	require.NoError(t, err)
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	waitForConnected(t, connected)
+	assert.Equal(t, int64(0), secondHits.Load())
+}
+
 func TestIsRetryableMethod(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

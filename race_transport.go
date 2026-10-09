@@ -16,8 +16,8 @@ import (
 // IdempotentHeader is an opt-in marker callers can set on a request to
 // declare it idempotent regardless of HTTP method. raceTransport will
 // then apply the same retry-across-transports behavior to that request
-// that it normally reserves for GET/HEAD: transport-level errors and
-// 5xx responses fall back to the next connected transport.
+// that it normally reserves for GET/HEAD: transport-level errors, 5xx
+// and 403 responses fall back to the next connected transport.
 //
 // Use this for POST endpoints that are semantically read-only or
 // otherwise safe to replay (e.g., a config-fetch endpoint that returns
@@ -36,12 +36,13 @@ const IdempotentHeader = "X-Kindling-Idempotent"
 // Retry behavior is method-aware, with a per-request opt-in override:
 //
 //   - For idempotent methods (GET, HEAD), the original retry-across-transports
-//     behavior is preserved: transport-level errors after RoundTrip and 5xx
-//     responses fall back to the next connected transport. This handles the
-//     case where an intermediary fronting transport (rather than the origin)
-//     produced the 5xx — common when one fronting CDN is being blocked.
-//     4xx responses are NOT retried even for idempotent methods: a 4xx is
-//     the server's verdict on the request itself, so retrying won't help.
+//     behavior is preserved: transport-level errors after RoundTrip, 5xx and
+//     403 responses fall back to the next connected transport. This handles
+//     the case where an intermediary (rather than the origin) produced the
+//     response — common when one fronting CDN is being blocked, or when a
+//     front such as GFE refuses the client's country on one path only.
+//     Other 4xx responses are NOT retried even for idempotent methods: they
+//     are the server's verdict on the request itself, so retrying won't help.
 //
 //   - For non-idempotent methods (POST/PUT/DELETE/PATCH/etc.), exactly one
 //     request is sent once any transport connects, and the response is
@@ -113,8 +114,8 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	tiers := groupByPriority(eligible)
 
 	// Race each priority tier in turn. A tier that produces a usable response
-	// (final) returns immediately; otherwise we hold its best fallback (a 5xx
-	// response and/or the last error) and try the next tier. Slow last-resort
+	// (final) returns immediately; otherwise we hold its best fallback (a
+	// retryable-status response and/or the last error) and try the next tier. Slow last-resort
 	// transports only get dialed once every faster tier has failed. heldResp /
 	// heldErr carry the best fallback seen across all tiers so far.
 	var heldResp *http.Response
@@ -133,7 +134,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			drainAndClose(heldResp)
 			return res.resp, res.err
 		}
-		// A 5xx held by this tier supersedes an earlier tier's fallback; an
+		// A retryable response held by this tier supersedes an earlier tier's fallback; an
 		// empty resp leaves the earlier one in place.
 		if res.resp != nil {
 			drainAndClose(heldResp)
@@ -184,7 +185,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // true, resp/err are exactly what RoundTrip should return — either a usable
 // response or a single-shot non-idempotent result. When final is false the
 // tier produced no usable response; resp holds the best fallback (a retryable
-// 5xx) and err the last connection/request error, for RoundTrip to weigh
+// 5xx or 403) and err every connection/request error joined, for RoundTrip to weigh
 // against earlier tiers and carry into the next one. A timeout always reports
 // final=false so RoundTrip can still surface a usable response held by an
 // earlier tier; it stops iterating because the shared ctx is then done.
@@ -262,11 +263,11 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 				continue
 			}
 
-			if resp.StatusCode >= 500 {
-				// 5xx on an idempotent method — the response may be from a
-				// blocked intermediary rather than the origin. Try the next
-				// transport. Hold this response in case nothing else works.
-				t.log.Warn("Retryable 5xx on idempotent method, falling back",
+			if isRetryableStatus(resp.StatusCode) {
+				// The response may be from a blocked intermediary rather than
+				// the origin. Try the next transport. Hold this response in
+				// case nothing else works.
+				t.log.Warn("Retryable status on idempotent method, falling back",
 					"name", result.name,
 					"method", req.Method,
 					"status", resp.StatusCode,
@@ -277,8 +278,8 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 				continue
 			}
 
-			// 2xx, 3xx, or 4xx on an idempotent method: 4xx is the server's
-			// verdict on the request itself, retry won't help. Return.
+			// 2xx, 3xx, or any other 4xx on an idempotent method: that 4xx is
+			// the server's verdict on the request itself, retry won't help.
 			drainAndClose(heldResp)
 			return tierResult{resp: resp, final: true}
 
@@ -335,9 +336,17 @@ func drainAndClose(resp *http.Response) {
 	_ = resp.Body.Close()
 }
 
+// isRetryableStatus reports whether an idempotent request should fall back to
+// another transport on this status. 403 is included because intermediaries
+// return it for path-specific blocks, e.g. Google Front End refusing a
+// sanctioned country on the direct route while a fronted route would succeed.
+func isRetryableStatus(code int) bool {
+	return code >= 500 || code == http.StatusForbidden
+}
+
 // isRetryableMethod reports whether requests with this method are safe to
-// replay on a different transport after a transport-level error or 5xx
-// response. Only GET and HEAD are included: they have no side effects
+// replay on a different transport after a transport-level error or
+// retryable-status response. Only GET and HEAD are included: they have no side effects
 // (RFC 7231 §4.2.1 "safe" methods) and the stdlib http.Client uses the
 // same conservative position. PUT/DELETE are technically idempotent per
 // the RFC but a server may have applied the side effect before a transient
