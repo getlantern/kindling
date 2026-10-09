@@ -16,8 +16,8 @@ import (
 // IdempotentHeader is an opt-in marker callers can set on a request to
 // declare it idempotent regardless of HTTP method. raceTransport will
 // then apply the same retry-across-transports behavior to that request
-// that it normally reserves for GET/HEAD: transport-level errors and
-// 5xx responses fall back to the next connected transport.
+// that it normally reserves for GET/HEAD: transport-level errors, 5xx
+// and 403 responses fall back to the next connected transport.
 //
 // Use this for POST endpoints that are semantically read-only or
 // otherwise safe to replay (e.g., a config-fetch endpoint that returns
@@ -36,12 +36,13 @@ const IdempotentHeader = "X-Kindling-Idempotent"
 // Retry behavior is method-aware, with a per-request opt-in override:
 //
 //   - For idempotent methods (GET, HEAD), the original retry-across-transports
-//     behavior is preserved: transport-level errors after RoundTrip and 5xx
-//     responses fall back to the next connected transport. This handles the
-//     case where an intermediary fronting transport (rather than the origin)
-//     produced the 5xx — common when one fronting CDN is being blocked.
-//     4xx responses are NOT retried even for idempotent methods: a 4xx is
-//     the server's verdict on the request itself, so retrying won't help.
+//     behavior is preserved: transport-level errors after RoundTrip, 5xx and
+//     403 responses fall back to the next connected transport. This handles
+//     the case where an intermediary (rather than the origin) produced the
+//     response — common when one fronting CDN is being blocked, or when a
+//     front such as GFE refuses the client's country on one path only.
+//     Other 4xx responses are NOT retried even for idempotent methods: they
+//     are the server's verdict on the request itself, so retrying won't help.
 //
 //   - For non-idempotent methods (POST/PUT/DELETE/PATCH/etc.), exactly one
 //     request is sent once any transport connects, and the response is
@@ -262,11 +263,11 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 				continue
 			}
 
-			if resp.StatusCode >= 500 {
-				// 5xx on an idempotent method — the response may be from a
-				// blocked intermediary rather than the origin. Try the next
-				// transport. Hold this response in case nothing else works.
-				t.log.Warn("Retryable 5xx on idempotent method, falling back",
+			if isRetryableStatus(resp.StatusCode) {
+				// The response may be from a blocked intermediary rather than
+				// the origin. Try the next transport. Hold this response in
+				// case nothing else works.
+				t.log.Warn("Retryable status on idempotent method, falling back",
 					"name", result.name,
 					"method", req.Method,
 					"status", resp.StatusCode,
@@ -277,8 +278,8 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 				continue
 			}
 
-			// 2xx, 3xx, or 4xx on an idempotent method: 4xx is the server's
-			// verdict on the request itself, retry won't help. Return.
+			// 2xx, 3xx, or any other 4xx on an idempotent method: that 4xx is
+			// the server's verdict on the request itself, retry won't help.
 			drainAndClose(heldResp)
 			return tierResult{resp: resp, final: true}
 
@@ -333,6 +334,14 @@ func drainAndClose(resp *http.Response) {
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
+}
+
+// isRetryableStatus reports whether an idempotent request should fall back to
+// another transport on this status. 403 is included because intermediaries
+// return it for path-specific blocks, e.g. Google Front End refusing a
+// sanctioned country on the direct route while a fronted route would succeed.
+func isRetryableStatus(code int) bool {
+	return code >= 500 || code == http.StatusForbidden
 }
 
 // isRetryableMethod reports whether requests with this method are safe to
