@@ -114,8 +114,8 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	tiers := groupByPriority(eligible)
 
 	// Race each priority tier in turn. A tier that produces a usable response
-	// (final) returns immediately; otherwise we hold its best fallback (a 5xx
-	// response and/or the last error) and try the next tier. Slow last-resort
+	// (final) returns immediately; otherwise we hold its best fallback (a
+	// retryable-status response and/or the last error) and try the next tier. Slow last-resort
 	// transports only get dialed once every faster tier has failed. heldResp /
 	// heldErr carry the best fallback seen across all tiers so far.
 	var heldResp *http.Response
@@ -134,7 +134,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			drainAndClose(heldResp)
 			return res.resp, res.err
 		}
-		// A 5xx held by this tier supersedes an earlier tier's fallback; an
+		// A retryable response held by this tier supersedes an earlier tier's fallback; an
 		// empty resp leaves the earlier one in place.
 		if res.resp != nil {
 			drainAndClose(heldResp)
@@ -185,7 +185,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // true, resp/err are exactly what RoundTrip should return — either a usable
 // response or a single-shot non-idempotent result. When final is false the
 // tier produced no usable response; resp holds the best fallback (a retryable
-// 5xx) and err the last connection/request error, for RoundTrip to weigh
+// 5xx or 403) and err the last connection/request error, for RoundTrip to weigh
 // against earlier tiers and carry into the next one. A timeout always reports
 // final=false so RoundTrip can still surface a usable response held by an
 // earlier tier; it stops iterating because the shared ctx is then done.
@@ -345,8 +345,8 @@ func isRetryableStatus(code int) bool {
 }
 
 // isRetryableMethod reports whether requests with this method are safe to
-// replay on a different transport after a transport-level error or 5xx
-// response. Only GET and HEAD are included: they have no side effects
+// replay on a different transport after a transport-level error or
+// retryable-status response. Only GET and HEAD are included: they have no side effects
 // (RFC 7231 §4.2.1 "safe" methods) and the stdlib http.Client uses the
 // same conservative position. PUT/DELETE are technically idempotent per
 // the RFC but a server may have applied the side effect before a transient
