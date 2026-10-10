@@ -80,6 +80,8 @@ func (cfg *Config) setDefaults() {
 	if cfg.QueryTimeout <= 0 {
 		cfg.QueryTimeout = 3 * time.Second
 	}
+	// The protocol clock is in milliseconds; anything shorter would expire every query on sight.
+	cfg.QueryTimeout = max(cfg.QueryTimeout, 50*time.Millisecond)
 	if cfg.IdleTimeout <= 0 {
 		cfg.IdleTimeout = 3 * time.Second
 	}

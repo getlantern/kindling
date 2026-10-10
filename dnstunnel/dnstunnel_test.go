@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -270,4 +271,22 @@ func TestResetStreamKeptUntilRSTSent(t *testing.T) {
 	require.NotNil(t, f)
 	assert.Equal(t, kindRst, f.kind)
 	assert.Equal(t, []uint16{sid}, sess.reapClosed())
+}
+
+func TestUnackedResetStreamIsReapedImmediately(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	zone, _ := parseZone("t.example.com")
+	cfg := Config{}
+	cfg.setDefaults()
+	sess, err := newClientSession(pub, zone, &cfg)
+	require.NoError(t, err)
+	sid := sess.openStream([]byte{atypIPv4, 1, 2, 3, 4, 0, 80})
+	sess.stream(sid).arq.reset() // a dial abandoned before the server acknowledged the stream
+	assert.Equal(t, []uint16{sid}, sess.reapClosed(), "an RST that can never be sent must not pin the stream")
+}
+
+func TestSubMillisecondQueryTimeoutIsClamped(t *testing.T) {
+	cfg := Config{QueryTimeout: 500 * time.Microsecond}
+	cfg.setDefaults()
+	assert.GreaterOrEqual(t, cfg.QueryTimeout, time.Millisecond)
 }
