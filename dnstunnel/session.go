@@ -181,7 +181,8 @@ func (s *clientSession) nextOpenSyn(now uint64) *frame {
 	}
 	for _, id := range s.sortedIDs() {
 		st := s.streams[id]
-		if st.openAcked || (st.opened && now-min(now, st.lastOpenMS) < s.upCfg.initialRTO) {
+		// A reset stream (a cancelled dial) must not be (re)opened on the server.
+		if st.openAcked || st.arq.isClosed() || (st.opened && now-min(now, st.lastOpenMS) < s.upCfg.initialRTO) {
 			continue
 		}
 		st.opened, st.lastOpenMS = true, now

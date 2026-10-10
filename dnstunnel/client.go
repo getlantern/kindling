@@ -630,9 +630,10 @@ func (p *pump) handleAnswer(msg answerMsg, now uint64) {
 		}
 		return
 	}
-	// An error rcode (SERVFAIL, REFUSED, ...) means this resolver won't carry the tunnel: count it as
-	// a loss so the pool fails over, and don't feed it to the session.
-	if len(body) >= 4 && body[3]&0x0F != 0 {
+	// An error rcode (SERVFAIL, REFUSED, ...) or a truncated (TC) answer means this resolver isn't
+	// carrying the tunnel intact: count it as a loss so the pool fails over, and don't feed the
+	// incomplete answer to the session.
+	if body[3]&0x0F != 0 || body[2]&0x02 != 0 {
 		p.pool.onLoss([]netip.AddrPort{from}, now)
 		if !slices.Contains(q.answered, false) {
 			delete(p.pending, txn)

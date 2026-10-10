@@ -483,3 +483,33 @@ func TestUnsentBacklogNeverPassesCap(t *testing.T) {
 	}
 	assert.LessOrEqual(t, sess.stream(sid).arq.unsent(), maxUnsent)
 }
+
+func TestTruncatedAnswerCountsAsLoss(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	zone, _ := parseZone("t.example.com")
+	cfg := Config{}
+	cfg.setDefaults()
+	sess, _ := newClientSession(pub, zone, &cfg)
+	pool, _ := parseResolvers([]string{"192.0.2.1", "192.0.2.2"}, 1)
+	p := &pump{cfg: &cfg, sess: sess, pool: pool, log: cfg.Logger, pending: map[uint16]*sentQuery{},
+		pendOpen: map[uint16]*openReq{}, conns: map[uint16]*tunnelConn{}, closing: map[uint16]uint64{},
+		probeByRes: map[netip.AddrPort]uint16{}, estCh: make(chan struct{})}
+	r := pool.rs[pool.sticky].addr
+	q := sess.pollQuery(0)
+	txn, _ := txnOf(q)
+	p.pending[txn] = &sentQuery{targets: []netip.AddrPort{r}, answered: []bool{false}, question: questionOf(q)}
+	truncated := append([]byte{q[0], q[1], 0x86, 0}, q[4:]...) // QR|AA|TC
+	p.handleAnswer(answerMsg{from: r, body: truncated}, 1)
+	assert.InDelta(t, 1.0, pool.rs[pool.index(r)].loss, 0.01, "a truncated answer is loss, not success")
+}
+
+func TestResetStreamIsNotOpened(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	zone, _ := parseZone("t.example.com")
+	cfg := Config{}
+	cfg.setDefaults()
+	sess, _ := newClientSession(pub, zone, &cfg)
+	sid, _ := sess.openStream([]byte{atypIPv4, 1, 2, 3, 4, 0, 80})
+	sess.stream(sid).arq.reset() // a cancelled dial
+	assert.Nil(t, sess.nextOpenSyn(0))
+}
