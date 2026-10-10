@@ -2,10 +2,12 @@ package dnstunnel
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	mrand "math/rand/v2"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -239,4 +241,33 @@ func TestAnswersOnlyAcceptedFromQueriedResolvers(t *testing.T) {
 	sess.outstanding[txn] = 99
 	p.handleAnswer(answerMsg{from: target, body: answer}, 2)
 	assert.Contains(t, sess.outstanding, txn, "a replayed answer for a finished query is ignored")
+}
+
+func TestDialRejectsTargetTooLongForZone(t *testing.T) {
+	c, err := New(Config{Zone: "t.example.com", ServerPublicKey: "Ty6wBHf3XGrUuC4+Q6mJd2TbeKpW4b4l2cVLmw9o4Yk=", Resolvers: []string{"192.0.2.1"}})
+	require.NoError(t, err)
+	defer c.Close()
+	long := strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + ".example.com:443"
+	_, err = c.DialContext(context.Background(), "tcp", long)
+	assert.ErrorContains(t, err, "uplink capacity")
+	c.mu.Lock()
+	assert.Nil(t, c.pump, "rejected before any session or socket is created")
+	c.mu.Unlock()
+}
+
+func TestResetStreamKeptUntilRSTSent(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	zone, _ := parseZone("t.example.com")
+	cfg := Config{}
+	cfg.setDefaults()
+	sess, err := newClientSession(pub, zone, &cfg)
+	require.NoError(t, err)
+	sid := sess.openStream([]byte{atypIPv4, 1, 2, 3, 4, 0, 80})
+	sess.stream(sid).openAcked = true
+	sess.stream(sid).arq.reset()
+	assert.Empty(t, sess.reapClosed(), "an unsent RST keeps the stream")
+	f := sess.stream(sid).arq.pollTransmit(0)
+	require.NotNil(t, f)
+	assert.Equal(t, kindRst, f.kind)
+	assert.Equal(t, []uint16{sid}, sess.reapClosed())
 }

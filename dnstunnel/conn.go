@@ -177,7 +177,12 @@ func (c *tunnelConn) SetReadDeadline(t time.Time) error {
 		c.rtimer = nil
 	}
 	if !t.IsZero() {
-		c.rtimer = time.AfterFunc(time.Until(t), c.cond.Broadcast)
+		// Broadcast under the lock so it can't slip between Read's deadline check and its Wait.
+		c.rtimer = time.AfterFunc(time.Until(t), func() {
+			c.mu.Lock()
+			c.cond.Broadcast()
+			c.mu.Unlock()
+		})
 	}
 	c.cond.Broadcast()
 	return nil

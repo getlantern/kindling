@@ -148,6 +148,10 @@ func (c *Client) DialContext(ctx context.Context, network, addr string) (net.Con
 	if err != nil {
 		return nil, err
 	}
+	// The stream-open frame carries the target unfragmented, so it must fit one query's QNAME.
+	if seg := uplinkSegment(c.zone); len(target) > seg {
+		return nil, fmt.Errorf("dnstunnel: target %d bytes exceeds the %d-byte uplink capacity for this zone", len(target), seg)
+	}
 	p, err := c.currentPump(ctx)
 	if err != nil {
 		return nil, err
@@ -525,7 +529,9 @@ func (p *pump) handleAnswer(msg answerMsg, now uint64) {
 	}
 	q.answered[i] = true
 	p.pool.onSuccess(from, now-min(now, q.sentAt))
-	if !slices.Contains(q.answered, false) {
+	// Keep tracking duplicates only while the table is small; past that, an answered query is
+	// dropped so a dead duplicate resolver can't grow it without bound.
+	if !slices.Contains(q.answered, false) || len(p.pending) > p.pendingCap() {
 		delete(p.pending, txn)
 	}
 	wasEst := p.sess.established()
@@ -550,6 +556,8 @@ func (p *pump) handleAnswer(msg answerMsg, now uint64) {
 		req.result <- nil
 	}
 }
+
+func (p *pump) pendingCap() int { return 4 * p.cfg.MaxQueriesInFlight }
 
 func (p *pump) expireQueries(now uint64) {
 	timeout := uint64(p.cfg.QueryTimeout.Milliseconds())

@@ -89,11 +89,12 @@ func (s *clientSession) sortedIDs() []uint16 {
 	return ids
 }
 
-// reapClosed drops fully closed streams and returns their ids.
+// reapClosed drops fully closed streams and returns their ids. A reset stream is kept until its RST
+// has gone out, or the server would keep sending to it.
 func (s *clientSession) reapClosed() []uint16 {
 	var out []uint16
 	for id, st := range s.streams {
-		if st.arq.isClosed() {
+		if st.arq.isClosed() && !st.arq.rstPending {
 			delete(s.streams, id)
 			out = append(out, id)
 		}
