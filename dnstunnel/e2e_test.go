@@ -462,3 +462,23 @@ func TestE2E_MTUProbeLowersDownlinkForTruncatingResolver(t *testing.T) {
 	// The 600-byte probe's answer exceeds 700 once the DNS envelope is added, so 400 is the fit.
 	assert.Equal(t, uint16(400), best, "the largest probe whose answer fits under the 700-byte cap")
 }
+
+// The first dial registers its stream before the handshake completes; it must still wait for the
+// probed MTU rather than racing a request out at the default segment size.
+func TestE2E_FirstDialWaitsForMTUOnTruncatingResolver(t *testing.T) {
+	resolver, pub := startServer(t)
+	payload := bytes.Repeat([]byte("first-dial"), 5000)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(payload)
+	}))
+	defer origin.Close()
+	relay := lossyRelay(t, resolver, 0.05, 0.05, 700)
+	c := newTestClient(t, relay, pub)
+	tr := &http.Transport{DialContext: c.DialContext, DisableKeepAlives: true}
+	resp, err := (&http.Client{Transport: tr, Timeout: 60 * time.Second}).Get(origin.URL)
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.NoError(t, err)
+	assert.Equal(t, payload, body)
+}

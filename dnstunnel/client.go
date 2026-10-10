@@ -291,7 +291,7 @@ type pump struct {
 	probeSent, probeDone bool
 	probeBest            uint16
 	probeDeadline        uint64
-	probeLeft            int // probes not yet heard back from
+	probeGot             map[uint16]bool // probe sizes confirmed by a valid response
 	mtuTxn               uint16
 	mtuInFlight          bool // a SetMtu awaits its answer; stream data is held until it lands
 	lastActive           uint64
@@ -316,6 +316,7 @@ func startPump(sess *clientSession, pool *resolverPool, pc net.PacketConn, cfg *
 		pendOpen: make(map[uint16]*openReq),
 		pending:  make(map[uint16]*sentQuery),
 		closing:  make(map[uint16]uint64),
+		probeGot: make(map[uint16]bool),
 	}
 	go p.readLoop()
 	go p.run()
@@ -554,13 +555,14 @@ func (p *pump) handleAnswer(msg answerMsg, now uint64) {
 	}
 	q.answered[i] = true
 	if q.probe {
-		if !slices.Contains(q.answered[:i], true) && !slices.Contains(q.answered[i+1:], true) {
-			p.probeLeft-- // first answer for this probe
-		}
 		if !slices.Contains(q.answered, false) {
 			delete(p.pending, txn)
 		}
-		p.probeBest = max(p.probeBest, p.sess.onAnswer(body, now))
+		// Only an authenticated probe response counts; an error or empty answer says nothing.
+		if size := p.sess.onAnswer(body, now); size > 0 && !p.probeDone {
+			p.probeGot[size] = true
+			p.probeBest = max(p.probeBest, size)
+		}
 		return
 	}
 	// An error rcode (SERVFAIL, REFUSED, ...) means this resolver won't carry the tunnel: count it as
@@ -570,6 +572,9 @@ func (p *pump) handleAnswer(msg answerMsg, now uint64) {
 		if !slices.Contains(q.answered, false) {
 			delete(p.pending, txn)
 			delete(p.sess.outstanding, txn) // no resolver will answer it usefully; free the slot
+			if p.mtuInFlight && txn == p.mtuTxn {
+				p.sendSetMtu(now) // every resolver refused it: try again (the pool has failed over)
+			}
 		}
 		return
 	}
@@ -585,6 +590,9 @@ func (p *pump) handleAnswer(msg answerMsg, now uint64) {
 	wasEst := p.sess.established()
 	p.sess.onAnswer(body, now)
 	if !wasEst && p.sess.established() {
+		// Gate opens and data before anything else goes out, so no stream sees a downlink segment
+		// cut before the probed MTU is in place.
+		p.sess.holdOpens, p.sess.holdData = true, true
 		close(p.estCh)
 		p.estWaiters = nil
 		p.log.Debug("dnstunnel: session established")
@@ -623,22 +631,22 @@ func (p *pump) probeMTU(now uint64) {
 	}
 	if !p.probeSent {
 		p.probeSent, p.probeDeadline = true, now+probeWindow
-		p.sess.holdOpens = true
 		for _, size := range probeSizes {
 			p.sendControl(p.sess.controlQuery(kindMtuProbe, size), now, true)
-			p.probeLeft++
 		}
 		return
 	}
-	// Done once every probe answered, or at the deadline (an oversized probe never returns).
-	if p.probeLeft > 0 && now < p.probeDeadline {
+	// Done once every size is confirmed, or at the deadline (an oversized probe never returns).
+	if len(p.probeGot) < len(probeSizes) && now < p.probeDeadline {
 		return
 	}
 	p.probeDone = true
 	p.sess.holdOpens = false
 	if p.probeBest > 0 {
-		p.sendSetMtu(now)
+		p.sendSetMtu(now) // releases data once the server answers it
 		p.log.Debug("dnstunnel: downlink MTU set", "bytes", p.probeBest)
+	} else {
+		p.sess.holdData = false // nothing came back: fall back to the server's default
 	}
 }
 
