@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -81,10 +82,11 @@ func parseResolvers(specs []string, duplication int) (*resolverPool, error) {
 		}
 		prefixStr, port := spec, uint16(53)
 		if i := strings.LastIndex(spec, ":"); i > 0 && strings.Contains(spec, "/") && strings.Count(spec, ":") == 1 {
-			var n uint16
-			if _, err := fmt.Sscanf(spec[i+1:], "%d", &n); err == nil {
-				prefixStr, port = spec[:i], n
+			n, err := strconv.ParseUint(spec[i+1:], 10, 16)
+			if err != nil {
+				return nil, fmt.Errorf("dnstunnel: bad port in resolver %q", spec)
 			}
+			prefixStr, port = spec[:i], uint16(n)
 		}
 		prefix, err := netip.ParsePrefix(prefixStr)
 		if err != nil {

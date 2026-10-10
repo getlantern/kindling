@@ -142,6 +142,9 @@ func New(cfg Config) (*Client, error) {
 	if _, err := buildQuery(0, make([]byte, 1+connIDLen+x25519PubLen), zone, cfg.EDNSUDPSize); err != nil || uplinkSegment(zone) < 32 {
 		return nil, fmt.Errorf("dnstunnel: zone %d bytes long leaves too little room for tunnel data", zone.wireLen())
 	}
+	if cfg.Cipher != ChaCha20Poly1305 && cfg.Cipher != AES256GCM {
+		return nil, fmt.Errorf("dnstunnel: unknown cipher %d", cfg.Cipher)
+	}
 	pub, err := decodeServerPub(cfg.ServerPublicKey)
 	if err != nil {
 		return nil, err
@@ -159,7 +162,8 @@ func New(cfg Config) (*Client, error) {
 // DialContext opens a tunnel stream to addr (host:port). A domain is resolved by the tunnel exit,
 // never locally. Only TCP is supported.
 func (c *Client) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	if network != "tcp" && network != "tcp4" && network != "tcp6" {
+	// Only "tcp": the exit picks the address family, so tcp4/tcp6 constraints couldn't be honored.
+	if network != "tcp" {
 		return nil, fmt.Errorf("dnstunnel: unsupported network %q", network)
 	}
 	target, err := encodeTarget(addr)
@@ -570,7 +574,10 @@ func (p *pump) handleOpen(req *openReq) {
 func (p *pump) handleWrite(req *writeReq) {
 	st := p.sess.stream(req.conn.sid)
 	if st == nil || st.arq.isClosed() {
-		req.result <- true // stream gone; the conn's own error state reports it
+		// The stream is gone: don't report the chunk as accepted. Failing the conn wakes the
+		// waiting Write, which then returns the terminal error.
+		req.conn.fail(errStreamReset)
+		req.result <- false
 		return
 	}
 	if st.arq.unsent() >= maxUnsent {

@@ -429,3 +429,20 @@ func TestSystemResolversKeepLinkLocalZone(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "eth0", p.rs[0].addr.Addr().Zone())
 }
+
+func TestConfigValidation(t *testing.T) {
+	base := Config{Zone: "t.example.com", ServerPublicKey: "Ty6wBHf3XGrUuC4+Q6mJd2TbeKpW4b4l2cVLmw9o4Yk=", Resolvers: []string{"192.0.2.1"}}
+	bad := base
+	bad.Cipher = Cipher(2)
+	_, err := New(bad)
+	assert.ErrorContains(t, err, "unknown cipher")
+
+	_, err = parseResolvers([]string{"10.0.0.0/24:53junk"}, 1)
+	assert.Error(t, err, "trailing garbage in a port is rejected")
+
+	c, err := New(base)
+	require.NoError(t, err)
+	defer c.Close()
+	_, err = c.DialContext(context.Background(), "tcp4", "example.com:443")
+	assert.ErrorContains(t, err, "unsupported network")
+}
