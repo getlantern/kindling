@@ -369,7 +369,7 @@ func (p *pump) open(ctx context.Context, target []byte, remote string) (net.Conn
 		// success is closed here so the stream isn't leaked.
 		go func() {
 			if err := <-req.result; err == nil {
-				req.conn.Close()
+				_ = req.conn.Close()
 			}
 		}()
 		return nil, fmt.Errorf("dnstunnel: stream open: %w", ctx.Err())
