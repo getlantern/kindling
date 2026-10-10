@@ -34,12 +34,14 @@ type tunnelConn struct {
 	rtimer   *time.Timer
 	wtimer   *time.Timer
 
-	// writable is signalled by the pump when the stream's unsent backlog drains below the cap.
+	// writable is signalled when a blocked Write should re-check: the backlog drained, the write
+	// deadline changed or passed, or the stream failed.
 	writable chan struct{}
+	closedCh chan struct{} // closed by Close, unblocking any pending Write
 }
 
 func newTunnelConn(p *pump, remote string) *tunnelConn {
-	c := &tunnelConn{p: p, remote: remote, writable: make(chan struct{}, 1)}
+	c := &tunnelConn{p: p, remote: remote, writable: make(chan struct{}, 1), closedCh: make(chan struct{})}
 	c.cond = sync.NewCond(&c.mu)
 	return c
 }
@@ -118,6 +120,9 @@ func (c *tunnelConn) Write(b []byte) (int, error) {
 		if err != nil {
 			return written, err
 		}
+		if !dl.IsZero() && !time.Now().Before(dl) {
+			return written, os.ErrDeadlineExceeded
+		}
 		n := min(len(b)-written, writeChunk)
 		ok, perr := c.p.write(c, b[written:written+n])
 		if perr != nil {
@@ -127,26 +132,14 @@ func (c *tunnelConn) Write(b []byte) (int, error) {
 			written += n
 			continue
 		}
-		// Backlogged: wait for the pump to drain, the deadline, or a failure.
-		var timer *time.Timer
-		var timeout <-chan time.Time
-		if !dl.IsZero() {
-			d := time.Until(dl)
-			if d <= 0 {
-				return written, os.ErrDeadlineExceeded
-			}
-			timer = time.NewTimer(d)
-			timeout = timer.C
-		}
+		// Backlogged: wait for a reason to re-check (drain, deadline change or expiry, failure),
+		// then loop, which re-reads the current deadline.
 		select {
 		case <-c.writable:
-		case <-timeout:
-			return written, os.ErrDeadlineExceeded
+		case <-c.closedCh:
+			return written, net.ErrClosed
 		case <-c.p.done:
 			return written, net.ErrClosed
-		}
-		if timer != nil {
-			timer.Stop()
 		}
 	}
 	return written, nil
@@ -160,6 +153,7 @@ func (c *tunnelConn) Close() error {
 	}
 	c.closed = true
 	c.rbuf = nil
+	close(c.closedCh)
 	c.mu.Unlock()
 	c.cond.Broadcast()
 	c.p.closeStream(c)
@@ -196,14 +190,16 @@ func (c *tunnelConn) SetWriteDeadline(t time.Time) error {
 		c.wtimer.Stop()
 		c.wtimer = nil
 	}
+	poke := func() {
+		select {
+		case c.writable <- struct{}{}:
+		default:
+		}
+	}
 	if !t.IsZero() {
-		c.wtimer = time.AfterFunc(time.Until(t), func() {
-			select {
-			case c.writable <- struct{}{}:
-			default:
-			}
-		})
+		c.wtimer = time.AfterFunc(time.Until(t), poke)
 	}
 	c.mu.Unlock()
+	poke() // a blocked Write re-evaluates against the new deadline
 	return nil
 }

@@ -350,3 +350,83 @@ func TestE2E_LossyPathWithDeadResolverAndBoundedMemory(t *testing.T) {
 	// point is catching an unbounded buffer, not benchmarking.
 	assert.Less(t, growth, int64(8<<20))
 }
+
+func TestE2E_ConnLifecycle(t *testing.T) {
+	resolver, pub := startServer(t)
+	// An origin that accepts and then never reads, and one that streams forever.
+	sink, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer sink.Close()
+	go func() {
+		for {
+			c, err := sink.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close()
+		}
+	}()
+	firehose, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer firehose.Close()
+	go func() {
+		for {
+			c, err := firehose.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				buf := make([]byte, 4096)
+				for {
+					if _, err := c.Write(buf); err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+	c := newTestClient(t, resolver, pub)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	t.Run("Close unblocks a backpressured Write", func(t *testing.T) {
+		conn, err := c.DialContext(ctx, "tcp", sink.Addr().String())
+		require.NoError(t, err)
+		done := make(chan error, 1)
+		go func() {
+			_, err := conn.Write(make([]byte, 4<<20))
+			done <- err
+		}()
+		time.Sleep(500 * time.Millisecond)
+		conn.Close()
+		select {
+		case err := <-done:
+			assert.Error(t, err)
+		case <-time.After(3 * time.Second):
+			t.Fatal("Write still blocked after Close")
+		}
+	})
+
+	t.Run("expired write deadline fails without sending", func(t *testing.T) {
+		conn, err := c.DialContext(ctx, "tcp", sink.Addr().String())
+		require.NoError(t, err)
+		defer conn.Close()
+		conn.SetWriteDeadline(time.Now().Add(-time.Second))
+		n, err := conn.Write([]byte("late"))
+		assert.ErrorIs(t, err, os.ErrDeadlineExceeded)
+		assert.Zero(t, n)
+	})
+
+	t.Run("a closed, unread stream does not pin the session", func(t *testing.T) {
+		conn, err := c.DialContext(ctx, "tcp", firehose.Addr().String())
+		require.NoError(t, err)
+		time.Sleep(300 * time.Millisecond) // let downlink pile up unread
+		c.mu.Lock()
+		p := c.pump
+		c.mu.Unlock()
+		conn.Close()
+		require.Eventually(t, p.isDone, time.Duration(closeLinger)*time.Millisecond+10*time.Second,
+			100*time.Millisecond, "session must tear down once the closed stream lingers out")
+	})
+}

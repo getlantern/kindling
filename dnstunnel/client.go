@@ -23,12 +23,15 @@ import (
 
 const (
 	// Bounds on per-stream buffering, chosen for small bootstrap requests.
-	connReadBuf  = 64 << 10 // max bytes queued for the app to read
-	maxUnsent    = 32 << 10 // max bytes queued for the tunnel per stream before Write blocks
-	writeChunk   = 8 << 10
-	udpReadBuf   = 2048 // a DNS answer is bounded by the advertised EDNS0 size
-	answerQueue  = 64
-	pumpTick     = 20 * time.Millisecond
+	connReadBuf = 64 << 10 // max bytes queued for the app to read
+	maxUnsent   = 32 << 10 // max bytes queued for the tunnel per stream before Write blocks
+	writeChunk  = 8 << 10
+	udpReadBuf  = 2048 // a DNS answer is bounded by the advertised EDNS0 size
+	answerQueue = 64
+	pumpTick    = 20 * time.Millisecond
+	// closeLinger bounds how long a stream the app closed may linger finishing its graceful close
+	// before it is reset, so a dead peer can't pin the session open.
+	closeLinger  = 10_000
 	maxReqLength = 16 << 10
 )
 
@@ -233,9 +236,12 @@ type answerMsg struct {
 	body []byte
 }
 
+// sentQuery tracks one query sent to one or more resolvers. Only answers from those resolvers are
+// accepted, each at most once, so a spoofed packet can neither free query slots nor sway the pool.
 type sentQuery struct {
-	targets []netip.AddrPort
-	sentAt  uint64
+	targets  []netip.AddrPort
+	answered []bool
+	sentAt   uint64
 }
 
 // pump owns one session: the socket, the session state machine, and every stream's protocol
@@ -261,7 +267,8 @@ type pump struct {
 	// Pump-goroutine state.
 	conns      map[uint16]*tunnelConn
 	pendOpen   map[uint16]*openReq
-	pending    map[uint16]sentQuery
+	pending    map[uint16]*sentQuery
+	closing    map[uint16]uint64 // streams the app closed → when
 	estWaiters []context.Context
 	lastActive uint64
 }
@@ -283,7 +290,8 @@ func startPump(sess *clientSession, pool *resolverPool, pc net.PacketConn, cfg *
 		done:     make(chan struct{}),
 		conns:    make(map[uint16]*tunnelConn),
 		pendOpen: make(map[uint16]*openReq),
-		pending:  make(map[uint16]sentQuery),
+		pending:  make(map[uint16]*sentQuery),
+		closing:  make(map[uint16]uint64),
 	}
 	go p.readLoop()
 	go p.run()
@@ -357,7 +365,13 @@ func (p *pump) open(ctx context.Context, target []byte, remote string) (net.Conn
 	case <-p.done:
 		return nil, net.ErrClosed
 	case <-ctx.Done():
-		// The pump prunes the abandoned open on its next pass.
+		// The pump prunes the abandoned open, or, if it opened in the same instant, the late
+		// success is closed here so the stream isn't leaked.
+		go func() {
+			if err := <-req.result; err == nil {
+				req.conn.Close()
+			}
+		}()
 		return nil, fmt.Errorf("dnstunnel: stream open: %w", ctx.Err())
 	}
 }
@@ -367,6 +381,8 @@ func (p *pump) write(c *tunnelConn, data []byte) (bool, error) {
 	req := &writeReq{conn: c, data: data, result: make(chan bool, 1)}
 	select {
 	case p.writeCh <- req:
+	case <-c.closedCh:
+		return false, net.ErrClosed
 	case <-p.done:
 		return false, net.ErrClosed
 	}
@@ -488,17 +504,29 @@ func (p *pump) handleWrite(req *writeReq) {
 func (p *pump) handleClose(c *tunnelConn) {
 	if st := p.sess.stream(c.sid); st != nil {
 		st.arq.close()
+		p.closing[c.sid] = p.now()
 	}
 	delete(p.conns, c.sid)
 }
 
 func (p *pump) handleAnswer(msg answerMsg, now uint64) {
 	from, body := msg.from, msg.body
-	if txn, ok := txnOf(body); ok {
-		if q, ok := p.pending[txn]; ok {
-			delete(p.pending, txn)
-			p.pool.onSuccess(from, now-min(now, q.sentAt))
-		}
+	txn, ok := txnOf(body)
+	if !ok {
+		return
+	}
+	q := p.pending[txn]
+	if q == nil {
+		return
+	}
+	i := slices.Index(q.targets, from)
+	if i < 0 || q.answered[i] {
+		return
+	}
+	q.answered[i] = true
+	p.pool.onSuccess(from, now-min(now, q.sentAt))
+	if !slices.Contains(q.answered, false) {
+		delete(p.pending, txn)
 	}
 	wasEst := p.sess.established()
 	p.sess.onAnswer(body, now)
@@ -508,11 +536,18 @@ func (p *pump) handleAnswer(msg answerMsg, now uint64) {
 		p.log.Debug("dnstunnel: session established")
 	}
 	for sid, req := range p.pendOpen {
-		if st := p.sess.stream(sid); st != nil && st.openAcked {
-			delete(p.pendOpen, sid)
-			p.conns[sid] = req.conn
-			req.result <- nil
+		st := p.sess.stream(sid)
+		if st == nil || !st.openAcked {
+			continue
 		}
+		delete(p.pendOpen, sid)
+		if err := req.ctx.Err(); err != nil {
+			st.arq.reset()
+			req.result <- err
+			continue
+		}
+		p.conns[sid] = req.conn
+		req.result <- nil
 	}
 }
 
@@ -521,7 +556,13 @@ func (p *pump) expireQueries(now uint64) {
 	for txn, q := range p.pending {
 		if now-min(now, q.sentAt) >= timeout {
 			delete(p.pending, txn)
-			p.pool.onLoss(q.targets, now)
+			var lost []netip.AddrPort
+			for i, t := range q.targets {
+				if !q.answered[i] {
+					lost = append(lost, t)
+				}
+			}
+			p.pool.onLoss(lost, now)
 		}
 	}
 	// Drop handshake waiters that gave up, so an unreachable server stops being retried.
@@ -549,7 +590,7 @@ func (p *pump) flushQueries(now uint64) {
 			_, _ = p.pc.WriteTo(q, net.UDPAddrFromAddrPort(t)) // per-send errors are non-fatal
 		}
 		if txn, ok := txnOf(q); ok {
-			p.pending[txn] = sentQuery{targets: targets, sentAt: now}
+			p.pending[txn] = &sentQuery{targets: targets, answered: make([]bool, len(targets)), sentAt: now}
 		}
 	}
 }
@@ -585,6 +626,19 @@ func (p *pump) fanOut() {
 			case c.writable <- struct{}{}:
 			default:
 			}
+		}
+	}
+	for sid, closedAt := range p.closing {
+		st := p.sess.stream(sid)
+		if st == nil || st.arq.isClosed() {
+			delete(p.closing, sid)
+			continue
+		}
+		// Nobody will read this: discard it so the ARQ keeps accepting and the remote FIN advances.
+		st.arq.delivered = nil
+		if p.now()-min(p.now(), closedAt) >= closeLinger {
+			st.arq.reset()
+			delete(p.closing, sid)
 		}
 	}
 	p.sess.reapClosed()

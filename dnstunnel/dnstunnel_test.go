@@ -2,6 +2,7 @@ package dnstunnel
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/rand"
 	mrand "math/rand/v2"
 	"net/netip"
@@ -201,4 +202,41 @@ func TestARQBoundsUndeliveredBytes(t *testing.T) {
 	s.read()
 	s.onFrame(&frame{kind: kindData, hasStream: true, streamID: 1, seq: before, hasSeq: true, payload: []byte("x")}, 0)
 	assert.Equal(t, before+1, s.rcvNxt, "delivery resumes once the app reads")
+}
+
+// A packet from an address the query wasn't sent to, a duplicate answer, or an unknown txn must not
+// free query slots or credit the pool: the answer path is a trust boundary.
+func TestAnswersOnlyAcceptedFromQueriedResolvers(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	zone, _ := parseZone("t.example.com")
+	cfg := Config{Resolvers: []string{"192.0.2.1"}}
+	cfg.setDefaults()
+	sess, err := newClientSession(pub, zone, &cfg)
+	require.NoError(t, err)
+	pool, err := parseResolvers([]string{"192.0.2.1", "192.0.2.2"}, 1)
+	require.NoError(t, err)
+	p := &pump{cfg: &cfg, sess: sess, pool: pool, log: cfg.Logger, pending: map[uint16]*sentQuery{},
+		pendOpen: map[uint16]*openReq{}, conns: map[uint16]*tunnelConn{}, closing: map[uint16]uint64{},
+		estCh: make(chan struct{})}
+
+	q := sess.pollQuery(0)
+	require.NotNil(t, q)
+	txn, _ := txnOf(q)
+	target := netip.MustParseAddrPort("192.0.2.1:53")
+	p.pending[txn] = &sentQuery{targets: []netip.AddrPort{target}, answered: []bool{false}}
+	answer := append([]byte{q[0], q[1], 0x84, 0}, q[4:]...) // echo shape is enough: it parses
+
+	p.handleAnswer(answerMsg{from: netip.MustParseAddrPort("203.0.113.9:53"), body: answer}, 1)
+	assert.Contains(t, p.pending, txn, "spoofed source must be ignored")
+	assert.Contains(t, sess.outstanding, txn, "spoofed source must not free the query slot")
+	assert.False(t, pool.rs[0].hasRTT)
+
+	p.handleAnswer(answerMsg{from: target, body: answer}, 1)
+	assert.NotContains(t, p.pending, txn)
+	assert.NotContains(t, sess.outstanding, txn)
+
+	sess.outstanding[txn] = 99
+	p.handleAnswer(answerMsg{from: target, body: answer}, 2)
+	assert.Contains(t, sess.outstanding, txn, "a replayed answer for a finished query is ignored")
 }
