@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -29,6 +30,7 @@ const (
 	udpReadBuf  = 4096 // EDNSUDPSize is clamped to this, so a full answer always fits
 	answerQueue = 64
 	pumpTick    = 20 * time.Millisecond
+	sendTimeout = 100 * time.Millisecond
 	// closeLinger bounds how long a stream the app closed may linger finishing its graceful close
 	// before it is reset, so a dead peer can't pin the session open.
 	closeLinger = 10_000
@@ -402,10 +404,19 @@ func (p *pump) open(ctx context.Context, target []byte, remote string) (net.Conn
 }
 
 // write offers data to the pump; false means the stream is backlogged and the data was not taken.
-func (p *pump) write(c *tunnelConn, data []byte) (bool, error) {
+// A deadline bounds the hand-off; once the pump takes the request it replies without blocking.
+func (p *pump) write(c *tunnelConn, data []byte, deadline time.Time) (bool, error) {
+	var expired <-chan time.Time
+	if !deadline.IsZero() {
+		t := time.NewTimer(time.Until(deadline))
+		defer t.Stop()
+		expired = t.C
+	}
 	req := &writeReq{conn: c, data: data, result: make(chan bool, 1)}
 	select {
 	case p.writeCh <- req:
+	case <-expired:
+		return false, os.ErrDeadlineExceeded // not handed off, so nothing was consumed
 	case <-c.closedCh:
 		return false, net.ErrClosed
 	case <-p.done:
@@ -661,14 +672,22 @@ func (p *pump) sendSetMtu(now uint64) {
 	p.mtuInFlight, p.sess.holdData = true, true
 }
 
+// send writes a query to each target. A short socket deadline keeps the pump from ever blocking on
+// a full send buffer; a dropped datagram is just loss, which ARQ already handles. Per-send errors are
+// non-fatal.
+func (p *pump) send(q []byte, targets []netip.AddrPort) {
+	_ = p.pc.SetWriteDeadline(time.Now().Add(sendTimeout))
+	for _, t := range targets {
+		_, _ = p.pc.WriteTo(q, net.UDPAddrFromAddrPort(t))
+	}
+}
+
 func (p *pump) sendControl(q []byte, now uint64, probe bool) {
 	if q == nil {
 		return
 	}
 	targets := p.pool.pick(now)
-	for _, t := range targets {
-		_, _ = p.pc.WriteTo(q, net.UDPAddrFromAddrPort(t))
-	}
+	p.send(q, targets)
 	if txn, ok := txnOf(q); ok {
 		p.pending[txn] = &sentQuery{targets: targets, answered: make([]bool, len(targets)), sentAt: now, probe: probe}
 	}
@@ -721,9 +740,7 @@ func (p *pump) flushQueries(now uint64) {
 			return
 		}
 		targets := p.pool.pick(now)
-		for _, t := range targets {
-			_, _ = p.pc.WriteTo(q, net.UDPAddrFromAddrPort(t)) // per-send errors are non-fatal
-		}
+		p.send(q, targets)
 		if txn, ok := txnOf(q); ok {
 			p.pending[txn] = &sentQuery{targets: targets, answered: make([]bool, len(targets)), sentAt: now}
 		}

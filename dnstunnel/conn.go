@@ -129,7 +129,7 @@ func (c *tunnelConn) Write(b []byte) (int, error) {
 			return written, os.ErrDeadlineExceeded
 		}
 		n := min(len(b)-written, writeChunk)
-		ok, perr := c.p.write(c, b[written:written+n])
+		ok, perr := c.p.write(c, b[written:written+n], dl)
 		if perr != nil {
 			return written, perr
 		}
