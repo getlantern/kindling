@@ -282,6 +282,8 @@ type sentQuery struct {
 	targets  []netip.AddrPort
 	answered []bool
 	sentAt   uint64
+	// question is the query's question section; an answer must echo it to count.
+	question []byte
 	// probe marks an MTU probe: an oversized one failing is expected, so it never counts against
 	// (or for) a resolver.
 	probe bool
@@ -580,7 +582,9 @@ func (p *pump) handleWrite(req *writeReq) {
 		req.result <- false
 		return
 	}
-	if st.arq.unsent() >= maxUnsent {
+	// Check the size after appending, so the backlog never passes the cap. An empty backlog
+	// always takes one chunk (chunks are smaller than the cap).
+	if u := st.arq.unsent(); u > 0 && u+len(req.data) > maxUnsent {
 		req.result <- false
 		return
 	}
@@ -608,6 +612,11 @@ func (p *pump) handleAnswer(msg answerMsg, now uint64) {
 	}
 	i := slices.Index(q.targets, from)
 	if i < 0 || q.answered[i] {
+		return
+	}
+	// It must be a response echoing the exact one-off name we asked: a resolver can't produce that
+	// without our authoritative server, and stray or spoofed datagrams don't match it.
+	if !answersQuestion(body, q.question) {
 		return
 	}
 	q.answered[i] = true
@@ -774,7 +783,7 @@ func (p *pump) sendTo(q []byte, targets []netip.AddrPort, now uint64, probe bool
 	}
 	p.send(q, targets)
 	if txn, ok := txnOf(q); ok {
-		p.pending[txn] = &sentQuery{targets: targets, answered: make([]bool, len(targets)), sentAt: now, probe: probe}
+		p.pending[txn] = &sentQuery{targets: targets, answered: make([]bool, len(targets)), sentAt: now, probe: probe, question: questionOf(q)}
 	}
 }
 
@@ -834,7 +843,7 @@ func (p *pump) flushQueries(now uint64) {
 		targets := p.pool.pick(now)
 		p.send(q, targets)
 		if txn, ok := txnOf(q); ok {
-			p.pending[txn] = &sentQuery{targets: targets, answered: make([]bool, len(targets)), sentAt: now}
+			p.pending[txn] = &sentQuery{targets: targets, answered: make([]bool, len(targets)), sentAt: now, question: questionOf(q)}
 		}
 	}
 }

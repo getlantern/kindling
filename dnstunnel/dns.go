@@ -1,6 +1,7 @@
 package dnstunnel
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"strings"
@@ -219,4 +220,23 @@ func (r *dnsReader) skipName() error {
 			return errBadPointer
 		}
 	}
+}
+
+// questionOf returns a message's first question (QNAME, QTYPE, QCLASS) as raw bytes.
+func questionOf(msg []byte) []byte {
+	r := dnsReader{buf: msg, pos: dnsHeaderLen}
+	if len(msg) < dnsHeaderLen || r.skipName() != nil || r.skip(4) != nil {
+		return nil
+	}
+	return msg[dnsHeaderLen:r.pos]
+}
+
+// answersQuestion reports whether msg is a DNS response to exactly the question q, compared
+// case-insensitively since resolvers may randomize the case of a forwarded name (0x20).
+func answersQuestion(msg, q []byte) bool {
+	if len(msg) < dnsHeaderLen || msg[2]&0x80 == 0 || binary.BigEndian.Uint16(msg[4:6]) != 1 {
+		return false
+	}
+	got := questionOf(msg)
+	return got != nil && bytes.EqualFold(got, q)
 }

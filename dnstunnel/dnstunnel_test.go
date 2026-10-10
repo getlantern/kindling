@@ -228,8 +228,8 @@ func TestAnswersOnlyAcceptedFromQueriedResolvers(t *testing.T) {
 	require.NotNil(t, q)
 	txn, _ := txnOf(q)
 	target := netip.MustParseAddrPort("192.0.2.1:53")
-	p.pending[txn] = &sentQuery{targets: []netip.AddrPort{target}, answered: []bool{false}}
-	answer := append([]byte{q[0], q[1], 0x84, 0}, q[4:]...) // echo shape is enough: it parses
+	p.pending[txn] = &sentQuery{targets: []netip.AddrPort{target}, answered: []bool{false}, question: questionOf(q)}
+	answer := append([]byte{q[0], q[1], 0x84, 0}, q[4:]...) // QR set, question echoed verbatim
 
 	p.handleAnswer(answerMsg{from: netip.MustParseAddrPort("203.0.113.9:53"), body: answer}, 1)
 	assert.Contains(t, p.pending, txn, "spoofed source must be ignored")
@@ -333,7 +333,7 @@ func TestErrorRcodeCountsAsResolverLoss(t *testing.T) {
 		q := sess.pollQuery(uint64(i))
 		require.NotNil(t, q)
 		txn, _ := txnOf(q)
-		p.pending[txn] = &sentQuery{targets: []netip.AddrPort{refusing}, answered: []bool{false}}
+		p.pending[txn] = &sentQuery{targets: []netip.AddrPort{refusing}, answered: []bool{false}, question: questionOf(q)}
 		refused := append([]byte{q[0], q[1], 0x84, 0x05}, q[4:]...) // RCODE=REFUSED
 		p.handleAnswer(answerMsg{from: refusing, body: refused}, uint64(i))
 		assert.NotContains(t, sess.outstanding, txn, "the slot is freed once every resolver has answered")
@@ -445,4 +445,41 @@ func TestConfigValidation(t *testing.T) {
 	defer c.Close()
 	_, err = c.DialContext(context.Background(), "tcp4", "example.com:443")
 	assert.ErrorContains(t, err, "unsupported network")
+}
+
+// Only a real response echoing the exact question counts: a stray datagram with the right txn, or a
+// response for another name, is ignored.
+func TestAnswerMustEchoQuestion(t *testing.T) {
+	zone, _ := parseZone("t.example.com")
+	q, err := buildQuery(7, []byte("payload"), zone, 1232)
+	require.NoError(t, err)
+	resp := append([]byte{q[0], q[1], 0x84, 0}, q[4:]...)
+	assert.True(t, answersQuestion(resp, questionOf(q)))
+	assert.False(t, answersQuestion([]byte{q[0], q[1]}, questionOf(q)), "a two-byte datagram")
+	assert.False(t, answersQuestion(q, questionOf(q)), "a query (QR=0) is not an answer")
+	other, _ := buildQuery(7, []byte("different"), zone, 1232)
+	assert.False(t, answersQuestion(append([]byte{other[0], other[1], 0x84, 0}, other[4:]...), questionOf(q)), "another name")
+	// 0x20 case randomization by a resolver is tolerated.
+	upper := append([]byte(nil), resp...)
+	qe := dnsHeaderLen + len(questionOf(q)) - 4
+	copy(upper[dnsHeaderLen:qe], bytes.ToUpper(upper[dnsHeaderLen:qe]))
+	assert.True(t, answersQuestion(upper, questionOf(q)))
+}
+
+func TestUnsentBacklogNeverPassesCap(t *testing.T) {
+	cfg := Config{}
+	cfg.setDefaults()
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	zone, _ := parseZone("t.example.com")
+	sess, _ := newClientSession(pub, zone, &cfg)
+	p := &pump{cfg: &cfg, sess: sess}
+	sid, _ := sess.openStream([]byte{atypIPv4, 1, 2, 3, 4, 0, 80})
+	c := newTunnelConn(p, "x")
+	c.sid = sid
+	for range 10 {
+		req := &writeReq{conn: c, data: make([]byte, writeChunk), result: make(chan bool, 1)}
+		p.handleWrite(req)
+		<-req.result
+	}
+	assert.LessOrEqual(t, sess.stream(sid).arq.unsent(), maxUnsent)
 }
