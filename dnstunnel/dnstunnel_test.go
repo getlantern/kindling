@@ -397,3 +397,35 @@ func TestSubMillisecondIdleTimeoutIsClamped(t *testing.T) {
 	cfg.setDefaults()
 	assert.GreaterOrEqual(t, cfg.IdleTimeout, time.Millisecond)
 }
+
+// A peer reset while an open is pending must fail the dial, not hang it.
+func TestPendingOpenFailsOnPeerReset(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	zone, _ := parseZone("t.example.com")
+	cfg := Config{}
+	cfg.setDefaults()
+	sess, err := newClientSession(pub, zone, &cfg)
+	require.NoError(t, err)
+	pool, _ := parseResolvers([]string{"192.0.2.1"}, 1)
+	p := &pump{cfg: &cfg, sess: sess, pool: pool, log: cfg.Logger, pending: map[uint16]*sentQuery{},
+		pendOpen: map[uint16]*openReq{}, conns: map[uint16]*tunnelConn{}, closing: map[uint16]uint64{},
+		probeByRes: map[netip.AddrPort]uint16{}, estCh: make(chan struct{})}
+	req := &openReq{ctx: context.Background(), target: []byte{atypIPv4, 1, 2, 3, 4, 0, 80}, conn: newTunnelConn(p, "x"), result: make(chan error, 1)}
+	p.handleOpen(req)
+	sess.stream(req.conn.sid).arq.onFrame(&frame{kind: kindRst, hasStream: true, streamID: req.conn.sid}, 0)
+	p.expireQueries(0)
+	select {
+	case err := <-req.result:
+		assert.ErrorIs(t, err, errStreamReset)
+	default:
+		t.Fatal("pending open left hanging after a peer reset")
+	}
+}
+
+func TestSystemResolversKeepLinkLocalZone(t *testing.T) {
+	a := netip.MustParseAddr("fe80::1%eth0")
+	assert.Equal(t, "[fe80::1%eth0]:53", netip.AddrPortFrom(a, 53).String())
+	p, err := parseResolvers([]string{"[fe80::1%eth0]:53"}, 1)
+	require.NoError(t, err)
+	assert.Equal(t, "eth0", p.rs[0].addr.Addr().Zone())
+}

@@ -24,7 +24,9 @@ import (
 
 const (
 	// Bounds on per-stream buffering, chosen for small bootstrap requests.
-	connReadBuf = 64 << 10 // max bytes queued for the app to read
+	// recvBudget bounds unread in-order bytes per stream, split evenly between the conn's read
+	// buffer and the ARQ's delivered buffer.
+	recvBudget  = 64 << 10
 	maxUnsent   = 32 << 10 // max bytes queued for the tunnel per stream before Write blocks
 	writeChunk  = 8 << 10
 	udpReadBuf  = 4096 // EDNSUDPSize is clamped to this, so a full answer always fits
@@ -36,7 +38,9 @@ const (
 	closeLinger = 10_000
 	// probeWindow is how long downlink MTU probes may take to return. Longer than spark's 400ms
 	// because resolver round trips from censored networks often exceed it.
-	probeWindow  = 1_500
+	probeWindow = 1_500
+	// probeFanout caps how many resolvers are probed. Pools are usually the OS's one to three.
+	probeFanout  = 8
 	maxReqLength = 16 << 10
 )
 
@@ -106,7 +110,7 @@ func (cfg *Config) setDefaults() {
 	cfg.arq = arqConfig{
 		sendWindow:   uint32(max(32, cfg.MaxQueriesInFlight)),
 		recvWindow:   128,
-		maxDelivered: connReadBuf,
+		maxDelivered: recvBudget / 2,
 		initialRTO:   1000,
 		minRTO:       200,
 		maxRTO:       30_000,
@@ -645,7 +649,13 @@ func (p *pump) handleAnswer(msg answerMsg, now uint64) {
 	opened := false
 	for sid, req := range p.pendOpen {
 		st := p.sess.stream(sid)
-		if st == nil || !st.openAcked {
+		if st == nil || st.arq.state == stateReset {
+			// The peer reset it before (or as) it opened: fail the dial rather than hang it.
+			delete(p.pendOpen, sid)
+			req.result <- errStreamReset
+			continue
+		}
+		if !st.openAcked {
 			continue
 		}
 		delete(p.pendOpen, sid)
@@ -676,8 +686,10 @@ func (p *pump) probeMTU(now uint64) {
 	}
 	if !p.probeSent {
 		p.probeSent, p.probeDeadline = true, now+probeWindow
+		// Probe every resolver failover might land on (up to a cap), not just today's sticky pick.
+		probed := p.pool.probeTargets(probeFanout)
 		for _, size := range probeSizes {
-			p.sendControl(p.sess.controlQuery(kindMtuProbe, size), now, true)
+			p.sendTo(p.sess.controlQuery(kindMtuProbe, size), probed, now, true)
 		}
 		return
 	}
@@ -689,6 +701,11 @@ func (p *pump) probeMTU(now uint64) {
 	}
 	p.probeDone = true
 	p.sess.holdOpens = false
+	// A resolver failover could reach with no probe result (unprobed, or it dropped every probe)
+	// gets the smallest size: we can't show it carries more.
+	if p.probeBest > 0 && len(p.probeByRes) < p.pool.len() {
+		p.probeBest = min(p.probeBest, probeSizes[0])
+	}
 	if p.probeBest > 0 {
 		p.sendSetMtu(now) // releases data once the server answers it
 		p.log.Debug("dnstunnel: downlink MTU set", "bytes", p.probeBest)
@@ -741,10 +758,13 @@ func (p *pump) send(q []byte, targets []netip.AddrPort) {
 }
 
 func (p *pump) sendControl(q []byte, now uint64, probe bool) {
+	p.sendTo(q, p.pool.pick(now), now, probe)
+}
+
+func (p *pump) sendTo(q []byte, targets []netip.AddrPort, now uint64, probe bool) {
 	if q == nil {
 		return
 	}
-	targets := p.pool.pick(now)
 	p.send(q, targets)
 	if txn, ok := txnOf(q); ok {
 		p.pending[txn] = &sentQuery{targets: targets, answered: make([]bool, len(targets)), sentAt: now, probe: probe}
@@ -779,6 +799,13 @@ func (p *pump) expireQueries(now uint64) {
 	}
 	// Drop handshake waiters that gave up, so an unreachable server stops being retried.
 	p.estWaiters = slices.DeleteFunc(p.estWaiters, func(ctx context.Context) bool { return ctx.Err() != nil })
+	// Opens the peer reset (or that were reaped) fail now instead of hanging the dial.
+	for sid, req := range p.pendOpen {
+		if st := p.sess.stream(sid); st == nil || st.arq.state == stateReset {
+			delete(p.pendOpen, sid)
+			req.result <- errStreamReset
+		}
+	}
 	// Abandoned opens: free the stream so it stops costing queries.
 	for sid, req := range p.pendOpen {
 		if req.ctx.Err() != nil {

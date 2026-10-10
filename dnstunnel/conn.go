@@ -83,7 +83,7 @@ func (c *tunnelConn) readRoom() int {
 	if c.closed {
 		return 0
 	}
-	return connReadBuf - len(c.rbuf)
+	return recvBudget/2 - len(c.rbuf)
 }
 
 func (c *tunnelConn) deliver(b []byte) {

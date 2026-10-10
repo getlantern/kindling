@@ -113,7 +113,7 @@ func systemResolvers() []string {
 		fields := strings.Fields(line)
 		if len(fields) >= 2 && fields[0] == "nameserver" {
 			if a, err := netip.ParseAddr(fields[1]); err == nil {
-				out = append(out, netip.AddrPortFrom(a.WithZone(""), 53).String())
+				out = append(out, netip.AddrPortFrom(a, 53).String()) // keeps a link-local zone
 			}
 		}
 	}
@@ -137,6 +137,20 @@ func (p *resolverPool) ranked() []int {
 	}
 	sort.SliceStable(idx, func(a, b int) bool { return p.rs[idx[a]].score() < p.rs[idx[b]].score() })
 	return idx
+}
+
+func (p *resolverPool) len() int { return len(p.rs) }
+
+// probeTargets returns up to n enabled resolvers, healthiest first: the ones failover can reach.
+func (p *resolverPool) probeTargets(n int) []netip.AddrPort {
+	var out []netip.AddrPort
+	for _, i := range p.ranked() {
+		if len(out) == n {
+			break
+		}
+		out = append(out, p.rs[i].addr)
+	}
+	return out
 }
 
 // pick chooses the resolver(s) for the next query: the sticky one plus duplicates.
