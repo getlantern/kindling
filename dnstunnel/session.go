@@ -4,6 +4,7 @@ import (
 	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/ed25519"
+	"encoding/binary"
 	"errors"
 	"slices"
 )
@@ -29,6 +30,12 @@ type clientSession struct {
 	txn        uint16
 	// outstanding maps txn → deadline for queries awaiting an answer.
 	outstanding map[uint16]uint64
+	// holdOpens defers stream opens (while the MTU probe settles), so every stream's first downlink
+	// segment is cut at the probed size.
+	holdOpens bool
+	// holdData withholds stream data while a SetMtu is unacknowledged, so the server resizes a stream
+	// before cutting its first downlink segment (it never re-cuts one already sent).
+	holdData bool
 }
 
 type clientStream struct {
@@ -169,6 +176,9 @@ func (s *clientSession) pollQuery(now uint64) []byte {
 
 // nextOpenSyn returns a stream-open Syn whose retransmit timer is due, if any.
 func (s *clientSession) nextOpenSyn(now uint64) *frame {
+	if s.holdOpens {
+		return nil
+	}
 	for _, id := range s.sortedIDs() {
 		st := s.streams[id]
 		if st.openAcked || (st.opened && now-min(now, st.lastOpenMS) < s.upCfg.initialRTO) {
@@ -182,6 +192,9 @@ func (s *clientSession) nextOpenSyn(now uint64) *frame {
 
 // nextStreamFrame round-robins open streams so none starves the others under the shared budget.
 func (s *clientSession) nextStreamFrame(now uint64) *frame {
+	if s.holdData {
+		return nil
+	}
 	ids := s.sortedIDs()
 	if len(ids) == 0 {
 		return nil
@@ -208,31 +221,39 @@ func (s *clientSession) nextStreamFrame(now uint64) *frame {
 }
 
 // onAnswer feeds a DNS answer into the session.
-func (s *clientSession) onAnswer(msg []byte, now uint64) {
+// onAnswer feeds a DNS answer into the session. It returns the payload size of an MTU probe that
+// came back intact, or 0.
+func (s *clientSession) onAnswer(msg []byte, now uint64) (probeOK uint16) {
 	txn, data, err := parseAnswer(msg)
 	if err != nil {
-		return
+		return 0
 	}
 	delete(s.outstanding, txn)
 	if len(data) == 0 {
-		return
+		return 0
 	}
 	p, err := parsePacket(data)
 	if err != nil || p.connID != s.connID {
-		return
+		return 0
 	}
 	if !s.established() {
 		if p.form == formSynAck {
 			s.finishHandshake(p.serverEph, p.sig)
 		}
-		return
+		return 0
 	}
 	if p.form != formShort {
-		return
+		return 0
 	}
 	f, err := openFrame(s.down, p.nonce, p.ciphertext)
-	if err != nil || !f.hasStream {
-		return
+	if err != nil {
+		return 0
+	}
+	if f.kind == kindMtuProbeResp && len(f.payload) >= 2 {
+		return binary.BigEndian.Uint16(f.payload)
+	}
+	if !f.hasStream {
+		return 0
 	}
 	st := s.streams[f.streamID]
 	if st == nil {
@@ -240,9 +261,28 @@ func (s *clientSession) onAnswer(msg []byte, now uint64) {
 	}
 	if f.kind == kindSynAck {
 		st.openAcked = true
-		return
+		return 0
 	}
 	st.arq.onFrame(f, now)
+	return 0
+}
+
+// controlQuery seals a session-level control frame (MTU probe, SetMtu) into a query. Control queries
+// don't occupy the in-flight budget; the pump tracks them itself.
+func (s *clientSession) controlQuery(k kind, size uint16) []byte {
+	if !s.established() {
+		return nil
+	}
+	w, err := sealShort(s.up, s.connID, &frame{kind: k, payload: binary.BigEndian.AppendUint16(nil, size)})
+	if err != nil {
+		return nil
+	}
+	s.txn++
+	q, err := buildQuery(s.txn, w, s.zone, s.ednsUDP)
+	if err != nil {
+		return nil
+	}
+	return q
 }
 
 // finishHandshake verifies the server's transcript signature, agrees, and installs the session keys.

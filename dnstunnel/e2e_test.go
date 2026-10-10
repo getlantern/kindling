@@ -220,7 +220,7 @@ func TestE2E_WrongServerKeyNeverEstablishes(t *testing.T) {
 
 // lossyRelay forwards UDP between one client and the server, dropping, duplicating and delaying
 // packets in both directions, like a congested path through recursive resolvers.
-func lossyRelay(t *testing.T, server string, loss, dup float64) string {
+func lossyRelay(t *testing.T, server string, loss, dup float64, maxAnswer int) string {
 	t.Helper()
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -276,6 +276,9 @@ func lossyRelay(t *testing.T, server string, loss, dup float64) string {
 			if err != nil {
 				return
 			}
+			if maxAnswer > 0 && n > maxAnswer {
+				continue // a resolver that drops oversized answers
+			}
 			toClient(buf[:n])
 		}
 	}()
@@ -293,7 +296,7 @@ func TestE2E_LossyPathWithDeadResolverAndBoundedMemory(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	relay := lossyRelay(t, resolver, 0.15, 0.10)
+	relay := lossyRelay(t, resolver, 0.15, 0.10, 0)
 	// A dead resolver first in the pool: duplication and failover must route around it.
 	dead, err := net.ListenPacket("udp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -429,4 +432,33 @@ func TestE2E_ConnLifecycle(t *testing.T) {
 		require.Eventually(t, p.isDone, time.Duration(closeLinger)*time.Millisecond+10*time.Second,
 			100*time.Millisecond, "session must tear down once the closed stream lingers out")
 	})
+}
+
+// A resolver that drops answers over ~700 bytes would stall every full-size downlink segment; the
+// MTU probe must find a size that fits and lower the server's segment with SetMtu.
+func TestE2E_MTUProbeLowersDownlinkForTruncatingResolver(t *testing.T) {
+	resolver, pub := startServer(t)
+	payload := bytes.Repeat([]byte("mtu-probe-"), 5000)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(payload)
+	}))
+	defer origin.Close()
+	// Jitter reorders queries, so the SetMtu can trail the request unless data waits for it.
+	relay := lossyRelay(t, resolver, 0.05, 0.05, 700)
+	c := newTestClient(t, relay, pub)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	rt, err := c.NewRoundTripper(ctx, "")
+	require.NoError(t, err)
+	resp, err := (&http.Client{Transport: rt, Timeout: 60 * time.Second}).Get(origin.URL)
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.NoError(t, err)
+	assert.Equal(t, payload, body)
+	c.mu.Lock()
+	best := c.pump.probeBest
+	c.mu.Unlock()
+	// The 600-byte probe's answer exceeds 700 once the DNS envelope is added, so 400 is the fit.
+	assert.Equal(t, uint16(400), best, "the largest probe whose answer fits under the 700-byte cap")
 }

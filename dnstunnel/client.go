@@ -31,7 +31,10 @@ const (
 	pumpTick    = 20 * time.Millisecond
 	// closeLinger bounds how long a stream the app closed may linger finishing its graceful close
 	// before it is reset, so a dead peer can't pin the session open.
-	closeLinger  = 10_000
+	closeLinger = 10_000
+	// probeWindow is how long downlink MTU probes may take to return. Longer than spark's 400ms
+	// because resolver round trips from censored networks often exceed it.
+	probeWindow  = 1_500
 	maxReqLength = 16 << 10
 )
 
@@ -249,7 +252,14 @@ type sentQuery struct {
 	targets  []netip.AddrPort
 	answered []bool
 	sentAt   uint64
+	// probe marks an MTU probe: an oversized one failing is expected, so it never counts against
+	// (or for) a resolver.
+	probe bool
 }
+
+// probeSizes are the downlink payload sizes tried after the handshake; the largest that returns is
+// sent to the server with SetMtu, lowering it below the default when a resolver truncates.
+var probeSizes = []uint16{400, 600, 800, 1000, 1200}
 
 // pump owns one session: the socket, the session state machine, and every stream's protocol
 // state. Everything below runs on the pump goroutine except the socket reader.
@@ -277,7 +287,14 @@ type pump struct {
 	pending    map[uint16]*sentQuery
 	closing    map[uint16]uint64 // streams the app closed → when
 	estWaiters []context.Context
-	lastActive uint64
+
+	probeSent, probeDone bool
+	probeBest            uint16
+	probeDeadline        uint64
+	probeLeft            int // probes not yet heard back from
+	mtuTxn               uint16
+	mtuInFlight          bool // a SetMtu awaits its answer; stream data is held until it lands
+	lastActive           uint64
 }
 
 func startPump(sess *clientSession, pool *resolverPool, pc net.PacketConn, cfg *Config) *pump {
@@ -442,6 +459,7 @@ func (p *pump) run() {
 		now := p.now()
 		p.expireQueries(now)
 		p.flushQueries(now)
+		p.probeMTU(now)
 		p.fanOut()
 		if p.idle(now) {
 			return
@@ -535,6 +553,16 @@ func (p *pump) handleAnswer(msg answerMsg, now uint64) {
 		return
 	}
 	q.answered[i] = true
+	if q.probe {
+		if !slices.Contains(q.answered[:i], true) && !slices.Contains(q.answered[i+1:], true) {
+			p.probeLeft-- // first answer for this probe
+		}
+		if !slices.Contains(q.answered, false) {
+			delete(p.pending, txn)
+		}
+		p.probeBest = max(p.probeBest, p.sess.onAnswer(body, now))
+		return
+	}
 	// An error rcode (SERVFAIL, REFUSED, ...) means this resolver won't carry the tunnel: count it as
 	// a loss so the pool fails over, and don't feed it to the session.
 	if len(body) >= 4 && body[3]&0x0F != 0 {
@@ -546,6 +574,9 @@ func (p *pump) handleAnswer(msg answerMsg, now uint64) {
 		return
 	}
 	p.pool.onSuccess(from, now-min(now, q.sentAt))
+	if p.mtuInFlight && txn == p.mtuTxn {
+		p.mtuInFlight, p.sess.holdData = false, false // the server has applied it
+	}
 	// Keep tracking duplicates only while the table is small; past that, an answered query is
 	// dropped so a dead duplicate resolver can't grow it without bound.
 	if !slices.Contains(q.answered, false) || len(p.pending) > p.pendingCap() {
@@ -558,12 +589,14 @@ func (p *pump) handleAnswer(msg answerMsg, now uint64) {
 		p.estWaiters = nil
 		p.log.Debug("dnstunnel: session established")
 	}
+	opened := false
 	for sid, req := range p.pendOpen {
 		st := p.sess.stream(sid)
 		if st == nil || !st.openAcked {
 			continue
 		}
 		delete(p.pendOpen, sid)
+		opened = true
 		if err := req.ctx.Err(); err != nil {
 			st.arq.reset()
 			req.result <- err
@@ -572,15 +605,84 @@ func (p *pump) handleAnswer(msg answerMsg, now uint64) {
 		p.conns[sid] = req.conn
 		req.result <- nil
 	}
+	// The server applies SetMtu only to streams that exist, so re-send it as each stream opens. It
+	// lands before the stream's first downlink segment: origin data can't exist until our request
+	// goes up, and the server cuts segments lazily.
+	if opened && p.probeBest > 0 {
+		p.sendSetMtu(now)
+	}
 }
 
 func (p *pump) pendingCap() int { return 4 * p.cfg.MaxQueriesInFlight }
 
+// probeMTU runs one round of downlink MTU probes after the handshake, then tells the server the
+// largest size that survived the path.
+func (p *pump) probeMTU(now uint64) {
+	if p.probeDone || !p.sess.established() {
+		return
+	}
+	if !p.probeSent {
+		p.probeSent, p.probeDeadline = true, now+probeWindow
+		p.sess.holdOpens = true
+		for _, size := range probeSizes {
+			p.sendControl(p.sess.controlQuery(kindMtuProbe, size), now, true)
+			p.probeLeft++
+		}
+		return
+	}
+	// Done once every probe answered, or at the deadline (an oversized probe never returns).
+	if p.probeLeft > 0 && now < p.probeDeadline {
+		return
+	}
+	p.probeDone = true
+	p.sess.holdOpens = false
+	if p.probeBest > 0 {
+		p.sendSetMtu(now)
+		p.log.Debug("dnstunnel: downlink MTU set", "bytes", p.probeBest)
+	}
+}
+
+// sendSetMtu tells the server the probed downlink size and holds stream data until it's answered.
+func (p *pump) sendSetMtu(now uint64) {
+	q := p.sess.controlQuery(kindSetMtu, p.probeBest)
+	if q == nil {
+		return
+	}
+	p.sendControl(q, now, false)
+	p.mtuTxn, _ = txnOf(q)
+	p.mtuInFlight, p.sess.holdData = true, true
+}
+
+func (p *pump) sendControl(q []byte, now uint64, probe bool) {
+	if q == nil {
+		return
+	}
+	targets := p.pool.pick(now)
+	for _, t := range targets {
+		_, _ = p.pc.WriteTo(q, net.UDPAddrFromAddrPort(t))
+	}
+	if txn, ok := txnOf(q); ok {
+		p.pending[txn] = &sentQuery{targets: targets, answered: make([]bool, len(targets)), sentAt: now, probe: probe}
+	}
+}
+
 func (p *pump) expireQueries(now uint64) {
 	timeout := uint64(p.cfg.QueryTimeout.Milliseconds())
+	resendMtu := false
+	defer func() {
+		if resendMtu {
+			p.sendSetMtu(now) // the SetMtu was lost: send it again
+		}
+	}()
 	for txn, q := range p.pending {
 		if now-min(now, q.sentAt) >= timeout {
 			delete(p.pending, txn)
+			if q.probe {
+				continue
+			}
+			if p.mtuInFlight && txn == p.mtuTxn {
+				resendMtu = true
+			}
 			var lost []netip.AddrPort
 			for i, t := range q.targets {
 				if !q.answered[i] {

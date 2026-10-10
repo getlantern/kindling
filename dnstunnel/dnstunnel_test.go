@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	mrand "math/rand/v2"
 	"net/netip"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -338,4 +339,14 @@ func TestErrorRcodeCountsAsResolverLoss(t *testing.T) {
 		assert.NotContains(t, sess.outstanding, txn, "the slot is freed once every resolver has answered")
 	}
 	assert.NotEqual(t, refusing, pool.pick(10)[0], "a refusing resolver loses the sticky slot")
+}
+
+// Like a TCP conn, an expired read deadline fails the read even when bytes are buffered.
+func TestReadDeadlineBeatsBufferedBytes(t *testing.T) {
+	p := &pump{done: make(chan struct{})}
+	c := newTunnelConn(p, "x")
+	c.deliver([]byte("buffered"))
+	require.NoError(t, c.SetReadDeadline(time.Now().Add(-time.Second)))
+	_, err := c.Read(make([]byte, 8))
+	assert.ErrorIs(t, err, os.ErrDeadlineExceeded)
 }

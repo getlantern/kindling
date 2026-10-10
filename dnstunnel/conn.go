@@ -49,18 +49,23 @@ func newTunnelConn(p *pump, remote string) *tunnelConn {
 func (c *tunnelConn) Read(b []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for len(c.rbuf) == 0 {
+	for {
+		// Like a TCP conn, an expired deadline fails the read even with bytes buffered.
 		switch {
 		case c.closed:
 			return 0, net.ErrClosed
+		case !c.rdl.IsZero() && !time.Now().Before(c.rdl):
+			return 0, os.ErrDeadlineExceeded
+		case len(c.rbuf) > 0:
 		case c.err != nil:
 			return 0, c.err
 		case c.eof:
 			return 0, io.EOF
-		case !c.rdl.IsZero() && !time.Now().Before(c.rdl):
-			return 0, os.ErrDeadlineExceeded
+		default:
+			c.cond.Wait()
+			continue
 		}
-		c.cond.Wait()
+		break
 	}
 	n := copy(b, c.rbuf)
 	c.rbuf = c.rbuf[n:]
@@ -154,6 +159,15 @@ func (c *tunnelConn) Close() error {
 	c.closed = true
 	c.rbuf = nil
 	close(c.closedCh)
+	// Stop the deadline timers so their callbacks don't keep this conn (and its session) reachable.
+	if c.rtimer != nil {
+		c.rtimer.Stop()
+		c.rtimer = nil
+	}
+	if c.wtimer != nil {
+		c.wtimer.Stop()
+		c.wtimer = nil
+	}
 	c.mu.Unlock()
 	c.cond.Broadcast()
 	c.p.closeStream(c)
@@ -171,6 +185,9 @@ func (c *tunnelConn) SetDeadline(t time.Time) error {
 func (c *tunnelConn) SetReadDeadline(t time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closed {
+		return net.ErrClosed
+	}
 	c.rdl = t
 	if c.rtimer != nil {
 		c.rtimer.Stop()
@@ -190,6 +207,10 @@ func (c *tunnelConn) SetReadDeadline(t time.Time) error {
 
 func (c *tunnelConn) SetWriteDeadline(t time.Time) error {
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return net.ErrClosed
+	}
 	c.wdl = t
 	if c.wtimer != nil {
 		c.wtimer.Stop()
