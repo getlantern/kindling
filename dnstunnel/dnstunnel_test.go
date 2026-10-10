@@ -356,11 +356,44 @@ func TestReadDeadlineBeatsBufferedBytes(t *testing.T) {
 func TestProbeMTUIsMinimumAcrossResolvers(t *testing.T) {
 	cfg := Config{}
 	cfg.setDefaults()
-	p := &pump{cfg: &cfg, probeGot: map[uint16]bool{}, probeByRes: map[netip.AddrPort]uint16{}}
+	p := &pump{cfg: &cfg, probeByRes: map[netip.AddrPort]uint16{}}
 	big, small := netip.MustParseAddrPort("192.0.2.1:53"), netip.MustParseAddrPort("192.0.2.2:53")
 	record := p.recordProbe
 	record(big, 1200)
 	record(small, 400)
 	record(big, 800)
 	assert.Equal(t, uint16(400), p.probeBest)
+}
+
+// Filling a gap mustn't promote the whole reorder buffer past the delivery cap; promotion resumes
+// once the app reads.
+func TestGapPromotionHonorsDeliveryCap(t *testing.T) {
+	cfg := arqConfig{maxSegment: 100, sendWindow: 1000, recvWindow: 1000, maxDelivered: 500, initialRTO: 1000, minRTO: 200, maxRTO: 30_000}
+	s := newARQStream(1, cfg)
+	data := func(seq uint32) *frame {
+		return &frame{kind: kindData, hasStream: true, streamID: 1, seq: seq, hasSeq: true, payload: make([]byte, 100)}
+	}
+	for seq := uint32(1); seq < 50; seq++ {
+		s.onFrame(data(seq), 0) // all out of order: seq 0 is missing
+	}
+	s.onFrame(data(0), 0)
+	assert.LessOrEqual(t, len(s.delivered), cfg.maxDelivered, "gap fill is capped")
+	total := 0
+	for range 20 {
+		total += len(s.read())
+		s.resumeRecv()
+	}
+	assert.Equal(t, 50*100, total, "everything is delivered once the app keeps reading")
+}
+
+func TestZoneTooLongIsRejected(t *testing.T) {
+	long := strings.Repeat(strings.Repeat("z", 63)+".", 3) + "example.com"
+	_, err := New(Config{Zone: long, ServerPublicKey: "Ty6wBHf3XGrUuC4+Q6mJd2TbeKpW4b4l2cVLmw9o4Yk=", Resolvers: []string{"192.0.2.1"}})
+	assert.ErrorContains(t, err, "too little room")
+}
+
+func TestSubMillisecondIdleTimeoutIsClamped(t *testing.T) {
+	cfg := Config{IdleTimeout: 200 * time.Microsecond}
+	cfg.setDefaults()
+	assert.GreaterOrEqual(t, cfg.IdleTimeout, time.Millisecond)
 }

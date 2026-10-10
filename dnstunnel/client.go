@@ -91,6 +91,7 @@ func (cfg *Config) setDefaults() {
 	if cfg.IdleTimeout <= 0 {
 		cfg.IdleTimeout = 3 * time.Second
 	}
+	cfg.IdleTimeout = max(cfg.IdleTimeout, 10*time.Millisecond) // the pump clock is in milliseconds
 	if cfg.Logger == nil {
 		cfg.Logger = slog.New(slog.DiscardHandler)
 	}
@@ -132,6 +133,11 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The zone eats into every query's 255-byte name; reject one that leaves too little room for
+	// the handshake or a useful data segment rather than letting every dial time out.
+	if _, err := buildQuery(0, make([]byte, 1+connIDLen+x25519PubLen), zone, cfg.EDNSUDPSize); err != nil || uplinkSegment(zone) < 32 {
+		return nil, fmt.Errorf("dnstunnel: zone %d bytes long leaves too little room for tunnel data", zone.wireLen())
+	}
 	pub, err := decodeServerPub(cfg.ServerPublicKey)
 	if err != nil {
 		return nil, err
@@ -160,23 +166,37 @@ func (c *Client) DialContext(ctx context.Context, network, addr string) (net.Con
 	if seg := uplinkSegment(c.zone); len(target) > seg {
 		return nil, fmt.Errorf("dnstunnel: target %d bytes exceeds the %d-byte uplink capacity for this zone", len(target), seg)
 	}
-	p, err := c.currentPump(ctx)
-	if err != nil {
-		return nil, err
+	for attempt := 0; ; attempt++ {
+		p, err := c.currentPump(ctx)
+		if err != nil {
+			return nil, err
+		}
+		conn, err := p.open(ctx, target, addr)
+		// The session may idle out under a dial that raced its teardown: retry once on a fresh one.
+		if errors.Is(err, net.ErrClosed) && attempt == 0 && ctx.Err() == nil {
+			continue
+		}
+		return conn, err
 	}
-	return p.open(ctx, target, addr)
 }
 
 // NewRoundTripper establishes the tunnel session (bounded by ctx) and returns an HTTP transport whose
 // connections ride the tunnel. TLS runs end to end through the tunnel, so the exit only sees
 // ciphertext. addr is unused: each request dials its own host.
 func (c *Client) NewRoundTripper(ctx context.Context, _ string) (http.RoundTripper, error) {
-	p, err := c.currentPump(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if err := p.awaitEstablished(ctx); err != nil {
-		return nil, err
+	for attempt := 0; ; attempt++ {
+		p, err := c.currentPump(ctx)
+		if err != nil {
+			return nil, err
+		}
+		err = p.awaitEstablished(ctx)
+		if errors.Is(err, net.ErrClosed) && attempt == 0 && ctx.Err() == nil {
+			continue // raced an idle teardown
+		}
+		if err != nil {
+			return nil, err
+		}
+		break
 	}
 	return &http.Transport{
 		DialContext:         c.DialContext,
@@ -293,7 +313,6 @@ type pump struct {
 	probeSent, probeDone bool
 	probeBest            uint16
 	probeDeadline        uint64
-	probeGot             map[uint16]bool           // probe sizes confirmed by a valid response
 	probeByRes           map[netip.AddrPort]uint16 // largest probe each resolver carried
 	mtuTxn               uint16
 	mtuInFlight          bool // a SetMtu awaits its answer; stream data is held until it lands
@@ -319,7 +338,6 @@ func startPump(sess *clientSession, pool *resolverPool, pc net.PacketConn, cfg *
 		pendOpen:   make(map[uint16]*openReq),
 		pending:    make(map[uint16]*sentQuery),
 		closing:    make(map[uint16]uint64),
-		probeGot:   make(map[uint16]bool),
 		probeByRes: make(map[netip.AddrPort]uint16),
 	}
 	go p.readLoop()
@@ -407,22 +425,37 @@ func (p *pump) open(ctx context.Context, target []byte, remote string) (net.Conn
 
 // write offers data to the pump; false means the stream is backlogged and the data was not taken.
 // A deadline bounds the hand-off; once the pump takes the request it replies without blocking.
-func (p *pump) write(c *tunnelConn, data []byte, deadline time.Time) (bool, error) {
-	var expired <-chan time.Time
-	if !deadline.IsZero() {
-		t := time.NewTimer(time.Until(deadline))
-		defer t.Stop()
-		expired = t.C
-	}
+func (p *pump) write(c *tunnelConn, data []byte) (bool, error) {
 	req := &writeReq{conn: c, data: data, result: make(chan bool, 1)}
-	select {
-	case p.writeCh <- req:
-	case <-expired:
-		return false, os.ErrDeadlineExceeded // not handed off, so nothing was consumed
-	case <-c.closedCh:
-		return false, net.ErrClosed
-	case <-p.done:
-		return false, net.ErrClosed
+	for handed := false; !handed; {
+		// Re-read the deadline each pass: SetWriteDeadline signals writable when it changes.
+		c.mu.Lock()
+		deadline := c.wdl
+		c.mu.Unlock()
+		var expired <-chan time.Time
+		var timer *time.Timer
+		if !deadline.IsZero() {
+			d := time.Until(deadline)
+			if d <= 0 {
+				return false, os.ErrDeadlineExceeded // not handed off, so nothing was consumed
+			}
+			timer = time.NewTimer(d)
+			expired = timer.C
+		}
+		select {
+		case p.writeCh <- req:
+			handed = true
+		case <-expired:
+			return false, os.ErrDeadlineExceeded
+		case <-c.writable:
+		case <-c.closedCh:
+			return false, net.ErrClosed
+		case <-p.done:
+			return false, net.ErrClosed
+		}
+		if timer != nil {
+			timer.Stop()
+		}
 	}
 	select {
 	case ok := <-req.result:
@@ -648,8 +681,10 @@ func (p *pump) probeMTU(now uint64) {
 		}
 		return
 	}
-	// Done once every size is confirmed, or at the deadline (an oversized probe never returns).
-	if len(p.probeGot) < len(probeSizes) && now < p.probeDeadline {
+	// Done once no probe still awaits any of its resolvers, or at the deadline (an oversized probe
+	// never returns). Stopping when the fastest resolver has confirmed every size would ignore a
+	// slower, smaller-MTU one and break the session-wide minimum.
+	if now < p.probeDeadline && p.probesPending() {
 		return
 	}
 	p.probeDone = true
@@ -662,11 +697,19 @@ func (p *pump) probeMTU(now uint64) {
 	}
 }
 
+func (p *pump) probesPending() bool {
+	for _, q := range p.pending {
+		if q.probe {
+			return true
+		}
+	}
+	return false
+}
+
 // recordProbe notes that from carried a probe of size. The downlink MTU is session-wide and the
 // server never re-cuts a sent segment, so the session uses a size every responding resolver carried:
 // failing over to the smaller path can't strand a segment.
 func (p *pump) recordProbe(from netip.AddrPort, size uint16) {
-	p.probeGot[size] = true
 	p.probeByRes[from] = max(p.probeByRes[from], size)
 	p.probeBest = 0
 	for _, v := range p.probeByRes {
@@ -779,6 +822,7 @@ func (p *pump) fanOut() {
 			if len(st.arq.delivered) == 0 {
 				st.arq.delivered = nil
 			}
+			st.arq.resumeRecv()
 		}
 		if st.arq.state == stateReset {
 			c.fail(errStreamReset)

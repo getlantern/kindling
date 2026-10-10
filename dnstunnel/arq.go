@@ -175,7 +175,8 @@ func (s *arqStream) onData(seq uint32, payload []byte) {
 
 // advanceRecv delivers contiguous buffered segments, then consumes the remote FIN at rcvNxt.
 func (s *arqStream) advanceRecv() {
-	for {
+	// Promotion honors the delivery cap too; the pump resumes it once the app has read.
+	for s.cfg.maxDelivered <= 0 || len(s.delivered) < s.cfg.maxDelivered {
 		if next, ok := s.reorder[s.rcvNxt]; ok {
 			delete(s.reorder, s.rcvNxt)
 			s.delivered = append(s.delivered, next...)
@@ -194,6 +195,19 @@ func (s *arqStream) advanceRecv() {
 	} else {
 		gap := s.rcvNxt
 		s.nackPending = &gap
+	}
+}
+
+// resumeRecv promotes buffered segments held back by the delivery cap, once the app has read, and
+// acks the new position so the sender learns of it.
+func (s *arqStream) resumeRecv() {
+	if len(s.reorder) == 0 && (s.remoteFinSeq == nil || s.remoteFinRecvd) {
+		return
+	}
+	before := s.rcvNxt
+	s.advanceRecv()
+	if s.rcvNxt != before {
+		s.ackPending = true
 	}
 }
 
