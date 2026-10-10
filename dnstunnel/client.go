@@ -26,7 +26,7 @@ const (
 	connReadBuf = 64 << 10 // max bytes queued for the app to read
 	maxUnsent   = 32 << 10 // max bytes queued for the tunnel per stream before Write blocks
 	writeChunk  = 8 << 10
-	udpReadBuf  = 2048 // a DNS answer is bounded by the advertised EDNS0 size
+	udpReadBuf  = 4096 // EDNSUDPSize is clamped to this, so a full answer always fits
 	answerQueue = 64
 	pumpTick    = 20 * time.Millisecond
 	// closeLinger bounds how long a stream the app closed may linger finishing its graceful close
@@ -74,6 +74,7 @@ func (cfg *Config) setDefaults() {
 	if cfg.EDNSUDPSize == 0 {
 		cfg.EDNSUDPSize = 1232
 	}
+	cfg.EDNSUDPSize = min(max(cfg.EDNSUDPSize, 512), udpReadBuf)
 	if cfg.MaxQueriesInFlight <= 0 {
 		cfg.MaxQueriesInFlight = 16
 	}
@@ -488,7 +489,11 @@ func (p *pump) handleOpen(req *openReq) {
 		p.estWaiters = append(p.estWaiters, req.ctx) // a handshake waiter
 		return
 	}
-	sid := p.sess.openStream(req.target)
+	sid, err := p.sess.openStream(req.target)
+	if err != nil {
+		req.result <- err
+		return
+	}
 	req.conn.sid = sid
 	p.pendOpen[sid] = req
 }
@@ -530,6 +535,16 @@ func (p *pump) handleAnswer(msg answerMsg, now uint64) {
 		return
 	}
 	q.answered[i] = true
+	// An error rcode (SERVFAIL, REFUSED, ...) means this resolver won't carry the tunnel: count it as
+	// a loss so the pool fails over, and don't feed it to the session.
+	if len(body) >= 4 && body[3]&0x0F != 0 {
+		p.pool.onLoss([]netip.AddrPort{from}, now)
+		if !slices.Contains(q.answered, false) {
+			delete(p.pending, txn)
+			delete(p.sess.outstanding, txn) // no resolver will answer it usefully; free the slot
+		}
+		return
+	}
 	p.pool.onSuccess(from, now-min(now, q.sentAt))
 	// Keep tracking duplicates only while the table is small; past that, an answered query is
 	// dropped so a dead duplicate resolver can't grow it without bound.

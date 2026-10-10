@@ -263,7 +263,8 @@ func TestResetStreamKeptUntilRSTSent(t *testing.T) {
 	cfg.setDefaults()
 	sess, err := newClientSession(pub, zone, &cfg)
 	require.NoError(t, err)
-	sid := sess.openStream([]byte{atypIPv4, 1, 2, 3, 4, 0, 80})
+	sid, err := sess.openStream([]byte{atypIPv4, 1, 2, 3, 4, 0, 80})
+	require.NoError(t, err)
 	sess.stream(sid).openAcked = true
 	sess.stream(sid).arq.reset()
 	assert.Empty(t, sess.reapClosed(), "an unsent RST keeps the stream")
@@ -280,7 +281,8 @@ func TestUnackedResetStreamIsReapedImmediately(t *testing.T) {
 	cfg.setDefaults()
 	sess, err := newClientSession(pub, zone, &cfg)
 	require.NoError(t, err)
-	sid := sess.openStream([]byte{atypIPv4, 1, 2, 3, 4, 0, 80})
+	sid, err := sess.openStream([]byte{atypIPv4, 1, 2, 3, 4, 0, 80})
+	require.NoError(t, err)
 	sess.stream(sid).arq.reset() // a dial abandoned before the server acknowledged the stream
 	assert.Equal(t, []uint16{sid}, sess.reapClosed(), "an RST that can never be sent must not pin the stream")
 }
@@ -289,4 +291,51 @@ func TestSubMillisecondQueryTimeoutIsClamped(t *testing.T) {
 	cfg := Config{QueryTimeout: 500 * time.Microsecond}
 	cfg.setDefaults()
 	assert.GreaterOrEqual(t, cfg.QueryTimeout, time.Millisecond)
+}
+
+func TestStreamCountIsBounded(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	zone, _ := parseZone("t.example.com")
+	cfg := Config{}
+	cfg.setDefaults()
+	sess, err := newClientSession(pub, zone, &cfg)
+	require.NoError(t, err)
+	for range maxStreams {
+		_, err := sess.openStream([]byte{atypIPv4, 1, 2, 3, 4, 0, 80})
+		require.NoError(t, err)
+	}
+	_, err = sess.openStream([]byte{atypIPv4, 1, 2, 3, 4, 0, 80})
+	assert.ErrorIs(t, err, errTooManyStreams)
+}
+
+func TestEDNSSizeClampedToReadBuffer(t *testing.T) {
+	cfg := Config{EDNSUDPSize: 65000}
+	cfg.setDefaults()
+	assert.LessOrEqual(t, int(cfg.EDNSUDPSize), udpReadBuf)
+}
+
+// A resolver answering SERVFAIL/REFUSED is a failure, not a success: it must lose its sticky slot.
+func TestErrorRcodeCountsAsResolverLoss(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	zone, _ := parseZone("t.example.com")
+	cfg := Config{}
+	cfg.setDefaults()
+	sess, err := newClientSession(pub, zone, &cfg)
+	require.NoError(t, err)
+	pool, err := parseResolvers([]string{"192.0.2.1", "192.0.2.2"}, 1)
+	require.NoError(t, err)
+	p := &pump{cfg: &cfg, sess: sess, pool: pool, log: cfg.Logger, pending: map[uint16]*sentQuery{},
+		pendOpen: map[uint16]*openReq{}, conns: map[uint16]*tunnelConn{}, closing: map[uint16]uint64{},
+		estCh: make(chan struct{})}
+	refusing := pool.rs[pool.sticky].addr
+	for i := range failoverStreak {
+		q := sess.pollQuery(uint64(i))
+		require.NotNil(t, q)
+		txn, _ := txnOf(q)
+		p.pending[txn] = &sentQuery{targets: []netip.AddrPort{refusing}, answered: []bool{false}}
+		refused := append([]byte{q[0], q[1], 0x84, 0x05}, q[4:]...) // RCODE=REFUSED
+		p.handleAnswer(answerMsg{from: refusing, body: refused}, uint64(i))
+		assert.NotContains(t, sess.outstanding, txn, "the slot is freed once every resolver has answered")
+	}
+	assert.NotEqual(t, refusing, pool.pick(10)[0], "a refusing resolver loses the sticky slot")
 }

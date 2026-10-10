@@ -4,6 +4,7 @@ import (
 	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/ed25519"
+	"errors"
 	"slices"
 )
 
@@ -68,14 +69,23 @@ func newClientSession(serverPub ed25519.PublicKey, zone zoneName, cfg *Config) (
 func (s *clientSession) established() bool { return s.up != nil }
 
 // openStream registers a stream to target; its open Syn goes out once the session is established.
-func (s *clientSession) openStream(target []byte) uint16 {
+// maxStreams bounds concurrent streams, and with them per-stream buffers. Bootstrap needs a handful.
+const maxStreams = 32
+
+var errTooManyStreams = errors.New("dnstunnel: too many concurrent streams")
+
+func (s *clientSession) openStream(target []byte) (uint16, error) {
+	if len(s.streams) >= maxStreams {
+		return 0, errTooManyStreams
+	}
+	// With at most maxStreams live, a free id is always within maxStreams+1 steps.
 	sid := s.nextStream
 	for sid == 0 || s.streams[sid] != nil {
 		sid++
 	}
 	s.nextStream = sid + 1
 	s.streams[sid] = &clientStream{arq: newARQStream(sid, s.upCfg), target: target}
-	return sid
+	return sid, nil
 }
 
 func (s *clientSession) stream(sid uint16) *clientStream { return s.streams[sid] }
