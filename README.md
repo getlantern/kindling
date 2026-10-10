@@ -5,7 +5,7 @@ The techniques integrated include:
 
 1) [Domain fronting](https://en.wikipedia.org/wiki/Domain_fronting).
 2) [Proxyless dialing from the Outline SDK](https://github.com/Jigsaw-Code/outline-sdk/tree/main/x/smart) that generally bypasses DNS-based and SNI-based blocking (i.e. works particularly well for broadly used services with a lot of IPs that are not IP-blocked)
-3) DNS tunneling via [DNSTT](https://www.bamsoftware.com/software/dnstt/)
+3) DNS tunneling via [DNSTT](https://www.bamsoftware.com/software/dnstt/), or via spark's DNS-tunnel protocol (the `dnstunnel` package)
 4) AMP caching also via David Fifield with a [Lantern implementation](https://github.com/getlantern/amp).
 
 The idea is to continually add more techniques as they become available such that all tools have access to the most robust library possible for getting on the network quickly and reliably.
@@ -15,6 +15,23 @@ The idea is to continually add more techniques as they become available such tha
 Kindling races the configured transports against each other and returns the first usable response. Transports race in priority tiers: every transport in the default tier connects in parallel, and a lower-priority tier is dialed only once every transport in the higher-priority tiers has failed to produce a usable response.
 
 DNS tunneling (`WithDNSTunnel`) is registered as a **last resort**. It keeps working under heavy censorship but is slow and low-throughput, so it is only dialed when the faster transports (domain fronting, proxyless dialing, AMP caching) are all blocked. Custom transports added via `WithTransport` default to the top tier; a transport can opt into a later tier by implementing `Priority() int` (higher numbers race later).
+
+### `dnstunnel`: spark's DNS tunnel in Go
+
+`dnstunnel` is a Go client for spark's DNS-tunnel protocol, wire-compatible with spark's `dns-tunnel-server`. It plugs into the same last-resort slot:
+
+```go
+dt, _ := dnstunnel.New(dnstunnel.Config{
+    Zone:            "t.example.com",     // the NS-delegated tunnel zone
+    ServerPublicKey: serverEd25519PubB64, // not a secret
+    Resolvers:       platformDNSServers,  // required on mobile, which has no /etc/resolv.conf
+})
+k, _ := kindling.NewKindling("myapp", /* faster transports */, kindling.WithDNSTunnel(dt))
+```
+
+Targets are sent as domains and resolved by the tunnel exit, and TLS runs end to end through the tunnel. It is sized for small bootstrap requests on memory-constrained platforms such as the iOS network extension: one session at a time, built on first use and torn down when idle, with every buffer bounded. Set `ListenPacket` to protect its UDP socket from a VPN route.
+
+The end-to-end tests run against the real server: `DNSTUNNEL_SERVER_BIN=/path/to/dns-tunnel-server go test ./dnstunnel/`.
 
 ## Example
 
