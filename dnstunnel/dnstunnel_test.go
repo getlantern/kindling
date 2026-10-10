@@ -350,3 +350,17 @@ func TestReadDeadlineBeatsBufferedBytes(t *testing.T) {
 	_, err := c.Read(make([]byte, 8))
 	assert.ErrorIs(t, err, os.ErrDeadlineExceeded)
 }
+
+// With mixed resolvers, the session MTU is one every responding resolver carried, so failing over to
+// the smaller path can't strand an oversized segment.
+func TestProbeMTUIsMinimumAcrossResolvers(t *testing.T) {
+	cfg := Config{}
+	cfg.setDefaults()
+	p := &pump{cfg: &cfg, probeGot: map[uint16]bool{}, probeByRes: map[netip.AddrPort]uint16{}}
+	big, small := netip.MustParseAddrPort("192.0.2.1:53"), netip.MustParseAddrPort("192.0.2.2:53")
+	record := p.recordProbe
+	record(big, 1200)
+	record(small, 400)
+	record(big, 800)
+	assert.Equal(t, uint16(400), p.probeBest)
+}

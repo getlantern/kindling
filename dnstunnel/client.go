@@ -293,7 +293,8 @@ type pump struct {
 	probeSent, probeDone bool
 	probeBest            uint16
 	probeDeadline        uint64
-	probeGot             map[uint16]bool // probe sizes confirmed by a valid response
+	probeGot             map[uint16]bool           // probe sizes confirmed by a valid response
+	probeByRes           map[netip.AddrPort]uint16 // largest probe each resolver carried
 	mtuTxn               uint16
 	mtuInFlight          bool // a SetMtu awaits its answer; stream data is held until it lands
 	lastActive           uint64
@@ -301,24 +302,25 @@ type pump struct {
 
 func startPump(sess *clientSession, pool *resolverPool, pc net.PacketConn, cfg *Config) *pump {
 	p := &pump{
-		cfg:      cfg,
-		sess:     sess,
-		pool:     pool,
-		pc:       pc,
-		log:      cfg.Logger,
-		start:    time.Now(),
-		openCh:   make(chan *openReq),
-		writeCh:  make(chan *writeReq),
-		closeCh:  make(chan *tunnelConn, 16),
-		answerCh: make(chan answerMsg, answerQueue),
-		wakeCh:   make(chan struct{}, 1),
-		estCh:    make(chan struct{}),
-		done:     make(chan struct{}),
-		conns:    make(map[uint16]*tunnelConn),
-		pendOpen: make(map[uint16]*openReq),
-		pending:  make(map[uint16]*sentQuery),
-		closing:  make(map[uint16]uint64),
-		probeGot: make(map[uint16]bool),
+		cfg:        cfg,
+		sess:       sess,
+		pool:       pool,
+		pc:         pc,
+		log:        cfg.Logger,
+		start:      time.Now(),
+		openCh:     make(chan *openReq),
+		writeCh:    make(chan *writeReq),
+		closeCh:    make(chan *tunnelConn, 16),
+		answerCh:   make(chan answerMsg, answerQueue),
+		wakeCh:     make(chan struct{}, 1),
+		estCh:      make(chan struct{}),
+		done:       make(chan struct{}),
+		conns:      make(map[uint16]*tunnelConn),
+		pendOpen:   make(map[uint16]*openReq),
+		pending:    make(map[uint16]*sentQuery),
+		closing:    make(map[uint16]uint64),
+		probeGot:   make(map[uint16]bool),
+		probeByRes: make(map[netip.AddrPort]uint16),
 	}
 	go p.readLoop()
 	go p.run()
@@ -571,8 +573,7 @@ func (p *pump) handleAnswer(msg answerMsg, now uint64) {
 		}
 		// Only an authenticated probe response counts; an error or empty answer says nothing.
 		if size := p.sess.onAnswer(body, now); size > 0 && !p.probeDone {
-			p.probeGot[size] = true
-			p.probeBest = max(p.probeBest, size)
+			p.recordProbe(from, size)
 		}
 		return
 	}
@@ -658,6 +659,20 @@ func (p *pump) probeMTU(now uint64) {
 		p.log.Debug("dnstunnel: downlink MTU set", "bytes", p.probeBest)
 	} else {
 		p.sess.holdData = false // nothing came back: fall back to the server's default
+	}
+}
+
+// recordProbe notes that from carried a probe of size. The downlink MTU is session-wide and the
+// server never re-cuts a sent segment, so the session uses a size every responding resolver carried:
+// failing over to the smaller path can't strand a segment.
+func (p *pump) recordProbe(from netip.AddrPort, size uint16) {
+	p.probeGot[size] = true
+	p.probeByRes[from] = max(p.probeByRes[from], size)
+	p.probeBest = 0
+	for _, v := range p.probeByRes {
+		if p.probeBest == 0 || v < p.probeBest {
+			p.probeBest = v
+		}
 	}
 }
 
