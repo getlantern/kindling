@@ -42,21 +42,27 @@ You can also dynamically add transports that provide a simple `Transport` interf
 ```go
 // Transport provides the basic interface that any transport must implement to be used by Kindling.
 type Transport interface {
-	// NewRoundTripper creates a new http.RoundTripper that uses this transport. As much as possible
-	// the RoundTripper should be pre-connected when it is returned, as otherwise it can take too
-	// much time away from other transports. In other words, Kindling parallelizes the connection
-	// of the transports, but the actual sending of the request is done serially to avoid
-	// issues with non-idempotent requests.
+	// NewRoundTripper creates a pre-connected http.RoundTripper. Kindling parallelizes the
+	// connection of the transports, but sends the request itself serially to avoid issues with
+	// non-idempotent requests, so the connection should be complete when this returns.
 	NewRoundTripper(ctx context.Context, addr string) (http.RoundTripper, error)
 
-	// MaxLength returns the maximum length of data that can be sent using this transport, if any.
-	// A value of 0 means there is no limit.
+	// MaxLength returns the maximum request body size this transport supports. Zero means no limit.
 	MaxLength() int
 
-	// Name returns the name of the transport for logging and debugging purposes.
+	// IsStreamable reports whether this transport supports streaming responses (text/event-stream).
+	IsStreamable() bool
+
+	// Name identifies this transport for logging and debugging.
 	Name() string
+
+	// RequestTimeout returns the maximum time a single request may spend on this transport.
+	// Zero means kindling picks a default.
+	RequestTimeout() time.Duration
 }
 ```
+
+A transport can also implement `Priority() int` to race in a later tier.
 
 You can then use this as follows:
 
