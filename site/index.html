@@ -11,9 +11,7 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'%3E%3Cpath d='M4 24 L14 17 L24 24' fill='none' stroke='%231d1b20' stroke-width='2.4' stroke-linecap='round'/%3E%3Cpath d='M6 20 L22 20' stroke='%231d1b20' stroke-width='2.4' stroke-linecap='round'/%3E%3Cpath d='M14 3 C18 8 19 11 17 14 C16 16 12 16 11 14 C10 12 11 10 12.5 9 C12.5 11 14 11.5 14.5 10.5 C15.5 8.5 14.5 6 14 3 Z' fill='%23d9481a'/%3E%3C/svg%3E">
 <title>Kindling</title>
 <meta name="description" content="Kindling is a Go library that gets an app's first requests through censoring firewalls by racing domain fronting, proxyless dialing, AMP caching and the Soar DNS tunnel.">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Tilt+Warp&family=Petrona:ital,wght@0,400;0,600;1,400&family=Fragment+Mono&display=swap">
+<link rel="stylesheet" href="fonts.css">
 <style>
 /* Layout: a fire-starting field manual. Cool ash paper, soot ink, one ember gradient that only
    appears where something catches; race lanes as the hero, then numbered steps of the race. */
@@ -23,10 +21,11 @@
   --soot: #1d1b20;
   --char: #5d5852;
   --smoke: #c9c5be;
-  --ember: #d9481a;
+  --ember: #a8360c;
   --flame: #f0a032;
+  --heat: #b9520a;
   --code-bg: #f3f2ee;
-  --band: #1d1b20; --band-fg: #ece6df; --band-muted: #a39c94; --band-line: #4c464d;
+  --band: #1d1b20; --band-fg: #ece6df; --band-muted: #a39c94; --band-line: #4c464d; --band-ember: #ef5a22;
   --display: "Tilt Warp", "Arial Rounded MT Bold", "Trebuchet MS", sans-serif;
   --body: "Petrona", Georgia, "Times New Roman", serif;
   --mono: "Fragment Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
@@ -35,12 +34,12 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --ash: #141216; --ash-2: #1c191e; --soot: #eee8e2; --char: #a59e96; --smoke: #3a3539;
-    --ember: #ff6a33; --flame: #ffbe5c; --code-bg: #19161b; --band: #241f27; color-scheme: dark;
+    --ember: #ff6a33; --flame: #ffbe5c; --heat: #ffbe5c; --code-bg: #19161b; --band: #241f27; color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --ash: #141216; --ash-2: #1c191e; --soot: #eee8e2; --char: #a59e96; --smoke: #3a3539;
-  --ember: #ff6a33; --flame: #ffbe5c; --code-bg: #19161b; --band: #241f27; color-scheme: dark;
+  --ember: #ff6a33; --flame: #ffbe5c; --heat: #ffbe5c; --code-bg: #19161b; --band: #241f27; color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -60,7 +59,7 @@ code { font-family: var(--mono); font-size: .82em; background: var(--ash-2); pad
 .kicker b { color: var(--ember); font-weight: 400; }
 .lede { font-size: 1.15rem; color: var(--char); }
 .ember-text {
-  background: linear-gradient(180deg, var(--flame) 10%, var(--ember) 80%);
+  background: linear-gradient(180deg, var(--heat) 10%, var(--ember) 80%);
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 
@@ -246,8 +245,8 @@ footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; g
         <button type="button" class="scene" data-s="2" aria-pressed="false">Everything blocked</button>
       </div>
     </div>
-    <canvas id="lanes"></canvas>
-    <p class="race-note" id="race-note">Illustrative timings.</p>
+    <canvas id="lanes" role="img" aria-label="Race between kindling's transports" aria-describedby="race-note">Domain fronting, proxyless dialing and the AMP cache start connecting at once, and the first to connect carries the request. The Soar DNS tunnel starts only if all three fail.</canvas>
+    <p class="race-note" id="race-note" aria-live="off">Illustrative timings.</p>
   </div>
 </div>
 
@@ -306,7 +305,7 @@ footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; g
       <article class="stick wide yours">
         <div class="top"><span class="name">WithTransport(…)</span><span class="tier">Tier 1 by default</span></div>
         <h3>Your transport</h3>
-        <p>Anything that can return an <code>http.RoundTripper</code> can join the race. Implement <code>Priority() int</code> to race in a later tier, and <code>MaxLength()</code> if bodies are capped. Kindling handles the racing, retries and timeouts.</p>
+        <p>Anything that can return an <code>http.RoundTripper</code> can join the race. Implement the <code>Transport</code> interface, returning 0 from <code>MaxLength()</code> and <code>RequestTimeout()</code> for no cap and the default timeout, and add an optional <code>Priority() int</code> to race in a later tier. Kindling handles the racing, retries and timeouts.</p>
       </article>
     </div>
   </section>
@@ -355,7 +354,11 @@ if err != nil {
 }
 
 client := k.<b>NewHTTPClient</b>()
-resp, err := client.Get(configURL)</pre>
+resp, err := client.Get(configURL)
+if err != nil {
+	return err
+}
+defer resp.Body.Close()</pre>
       </figure>
       <figure class="term">
         <div class="top"><span>Bring your own</span><button type="button" data-copy="own">Copy</button></div>
@@ -363,11 +366,14 @@ resp, err := client.Get(configURL)</pre>
 	<i>// Return a pre-connected RoundTripper.</i>
 	NewRoundTripper(ctx context.Context,
 		addr string) (http.RoundTripper, error)
-	<i>// Max request body, or 0 for no limit.</i>
-	MaxLength() int
+	MaxLength() int                <i>// max body, 0 = no limit</i>
+	IsStreamable() bool            <i>// can carry text/event-stream</i>
 	Name() string
+	RequestTimeout() time.Duration <i>// 0 = kindling's default</i>
 }
 
+<i>// Optional: race in a later tier.</i>
+<i>//   Priority() int</i>
 kindling.<b>WithTransport</b>(myTransport)</pre>
       </figure>
     </div>
@@ -435,8 +441,8 @@ kindling.<b>WithTransport</b>(myTransport)</pre>
 
   function colors() {
     const cs = getComputedStyle(document.documentElement);
-    for (const k of ["band-fg", "band-muted", "band-line", "ember", "flame"]) col[k] = cs.getPropertyValue("--" + k).trim();
-    col.ash = col["band-fg"]; col.smoke = col["band-muted"]; col.char = col["band-line"];
+    for (const k of ["band-fg", "band-muted", "band-line", "band-ember", "flame"]) col[k] = cs.getPropertyValue("--" + k).trim();
+    col.ash = col["band-fg"]; col.smoke = col["band-muted"]; col.char = col["band-line"]; col.ember = col["band-ember"];
   }
   function size() {
     const r = cv.getBoundingClientRect(), d = Math.min(devicePixelRatio || 1, 2);
@@ -479,7 +485,8 @@ kindling.<b>WithTransport</b>(myTransport)</pre>
     ctx.fillText("ORIGIN", g.right + (W - g.right) / 2, 14);
     LANES.forEach((L, i) => {
       const y = g.y(i), l = plan.lanes[i];
-      ctx.font = '400 15px "Tilt Warp", sans-serif'; ctx.textAlign = "left"; ctx.fillStyle = col.ash;
+      const narrow = W < 520;
+      ctx.font = `400 ${narrow ? 12 : 15}px "Tilt Warp", sans-serif`; ctx.textAlign = "left"; ctx.fillStyle = col.ash;
       ctx.fillText(L.name, 14, y - 7);
       ctx.font = '400 10px "Fragment Mono", ui-monospace, monospace'; ctx.fillStyle = col.smoke;
       ctx.fillText(L.tag, 14, y + 11);
@@ -512,14 +519,14 @@ kindling.<b>WithTransport</b>(myTransport)</pre>
         if (Math.random() < .9) sparks.push({ x: g.right + (Math.random() - .5) * 10, y, vx: (Math.random() - .5) * 30, vy: -40 - Math.random() * 70, life: .9 + Math.random() * .5, hot: true });
         ctx.fillStyle = col.flame; ctx.beginPath(); ctx.arc(g.right, y, 7, 0, 7); ctx.fill();
         ctx.font = '400 11px "Fragment Mono", ui-monospace, monospace'; ctx.fillStyle = col.flame; ctx.textAlign = "right";
-        ctx.fillText(`connected ${l.end.toFixed(1)} s · request sent`, g.right - 14, y - 13);
+        ctx.fillText(narrow ? `won ${l.end.toFixed(1)} s` : `connected ${l.end.toFixed(1)} s · request sent`, g.right - 14, y - 13);
       } else {
         // fizzled or cancelled: smoke
         if (Math.random() < .25 && t - stopAt < 1.2) sparks.push({ x, y, vx: (Math.random() - .5) * 12, vy: -15 - Math.random() * 20, life: 1.1, hot: false });
         ctx.strokeStyle = col.char; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.moveTo(x - 5, y - 5); ctx.lineTo(x + 5, y + 5); ctx.moveTo(x + 5, y - 5); ctx.lineTo(x - 5, y + 5); ctx.stroke();
         ctx.font = '400 10px "Fragment Mono", ui-monospace, monospace'; ctx.fillStyle = col.smoke; ctx.textAlign = "left";
-        ctx.fillText(l.cancel != null ? "cancelled, another won" : "blocked", x + 12, y - 10);
+        ctx.fillText(l.cancel != null ? (narrow ? "cancelled" : "cancelled, another won") : "blocked", x + 12, y - 10);
       }
     });
   }
@@ -536,6 +543,7 @@ kindling.<b>WithTransport</b>(myTransport)</pre>
     scene = s; plan = build(s); t0 = performance.now(); sparks = [];
     if (user) auto = false;
     btns.forEach((b, i) => b.setAttribute("aria-pressed", i === s));
+    note.setAttribute("aria-live", user ? "polite" : "off");
     note.textContent = SCENES[s].note + " Timings are illustrative.";
     if (reduce.matches) { draw(plan.total); }
   }
