@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -101,6 +103,9 @@ type kindling struct {
 	// smartDialerConfig overrides the embedded smart_dialer_config.yml.
 	// nil falls back to the embedded default.
 	smartDialerConfig []byte
+	// proxylessAliases maps a request host to the host the proxyless
+	// transport connects to instead. Set via WithProxylessAliases.
+	proxylessAliases map[string]string
 	// deferred holds option work that must run after every other option
 	// has had a chance to mutate the struct. Used by WithProxyless so it
 	// reads streamDialer/packetDialer after WithStreamDialer /
@@ -361,21 +366,62 @@ func WithProxyless(domains ...string) Option {
 			dialer := newLazySmartDialer(
 				k.logWriter, k.smartDialerConfig, k.streamDialer, k.packetDialer, domains,
 			)
+			aliases := k.proxylessAliases
 			k.transports = append(k.transports, &namedTransport{
 				name:         string(TransportSmart),
 				isStreamable: true,
 				newRT: func(ctx context.Context, addr string) (http.RoundTripper, error) {
+					alias, addr := aliasAddr(aliases, addr)
 					conn, err := dialer.DialStream(ctx, addr)
 					if err != nil {
 						return nil, fmt.Errorf("smart dial: %w", err)
 					}
-					return preconnectedTransport(conn), nil
+					if alias == "" {
+						return preconnectedTransport(conn), nil
+					}
+					return &hostRewriter{host: alias, next: preconnectedTransport(conn)}, nil
 				},
 			})
 			return nil
 		})
 		return nil
 	}
+}
+
+// WithProxylessAliases makes the proxyless transport send requests for each key
+// host to its value instead, for example a CDN-proxied name for an origin whose
+// own edge refuses some countries. Other transports keep the original host.
+// Keys and values are bare hosts; the request's port is kept.
+// List the alias hosts in WithProxyless so each gets its own strategy search.
+func WithProxylessAliases(aliases map[string]string) Option {
+	return func(k *kindling) error {
+		m := make(map[string]string, len(aliases))
+		for from, to := range aliases {
+			if !bareHost(from) || !bareHost(to) {
+				return fmt.Errorf("proxyless alias %q -> %q: want bare hosts, without ports or brackets", from, to)
+			}
+			key := strings.ToLower(from)
+			if _, dup := m[key]; dup {
+				return fmt.Errorf("proxyless alias %q: host listed more than once", from)
+			}
+			m[key] = to
+		}
+		k.proxylessAliases = m
+		return nil
+	}
+}
+
+// bareHost reports whether h is a non-empty host with no port or brackets: the
+// request's own port is kept, so a port here would be doubled.
+func bareHost(h string) bool {
+	if h == "" || strings.ContainsAny(h, "[]/") {
+		return false
+	}
+	if strings.Contains(h, ":") {
+		ip, err := netip.ParseAddr(h)
+		return err == nil && ip.Is6()
+	}
+	return true
 }
 
 // --- Internal transport type ---

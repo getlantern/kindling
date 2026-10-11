@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,7 +27,7 @@ const smartSearchTimeout = 60 * time.Second
 // strategy unblocks every one of them, and a domain that is blocked outright
 // then takes the reachable ones down with it.
 type lazySmartDialer struct {
-	// domains is in caller order and deduplicated; domains[0] is the fallback
+	// domains is in caller order, lowercased and deduplicated; domains[0] is the fallback
 	// for addresses that match no configured domain.
 	domains  []string
 	searches map[string]*smartSearch
@@ -40,11 +42,12 @@ func newLazySmartDialer(
 ) *lazySmartDialer {
 	l := &lazySmartDialer{searches: make(map[string]*smartSearch, len(domains))}
 	for _, domain := range domains {
-		if _, seen := l.searches[domain]; seen {
+		key := strings.ToLower(domain)
+		if _, seen := l.searches[key]; seen {
 			continue
 		}
-		l.domains = append(l.domains, domain)
-		l.searches[domain] = &smartSearch{
+		l.domains = append(l.domains, key)
+		l.searches[key] = &smartSearch{
 			build: func() (transport.StreamDialer, error) {
 				ctx, cancel := context.WithTimeout(context.Background(), smartSearchTimeout)
 				defer cancel()
@@ -80,7 +83,7 @@ func (l *lazySmartDialer) searchFor(addr string) (*smartSearch, error) {
 	if h, _, err := net.SplitHostPort(addr); err == nil {
 		host = h
 	}
-	if search, ok := l.searches[host]; ok {
+	if search, ok := l.searches[strings.ToLower(host)]; ok {
 		return search, nil
 	}
 	return l.searches[l.domains[0]], nil
@@ -156,4 +159,37 @@ func (s *smartSearch) run(pending *pendingSearch) {
 		close(pending.done)
 	}()
 	pending.dialer, pending.err = s.build()
+}
+
+// aliasAddr returns the alias for addr's host, if any, and the address to dial.
+func aliasAddr(aliases map[string]string, addr string) (string, string) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", addr
+	}
+	alias, ok := aliases[strings.ToLower(host)]
+	if !ok {
+		return "", addr
+	}
+	return alias, net.JoinHostPort(alias, port)
+}
+
+// hostRewriter sends each request to host, which also becomes the TLS server
+// name, leaving the caller's request untouched.
+type hostRewriter struct {
+	host string
+	next http.RoundTripper
+}
+
+func (h *hostRewriter) RoundTrip(req *http.Request) (*http.Response, error) {
+	r := req.Clone(req.Context())
+	if _, port, err := net.SplitHostPort(r.URL.Host); err == nil {
+		r.URL.Host = net.JoinHostPort(h.host, port)
+	} else if strings.Contains(h.host, ":") {
+		r.URL.Host = "[" + h.host + "]"
+	} else {
+		r.URL.Host = h.host
+	}
+	r.Host = ""
+	return h.next.RoundTrip(r)
 }
