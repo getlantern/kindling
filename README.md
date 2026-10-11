@@ -40,17 +40,20 @@ the next transport, or still connecting when another won. Callers can attach it 
 tracing, for example as span events.
 
 ```go
-kindling.WithRaceObserver(func(ctx context.Context, race kindling.Race) {
-	span := trace.SpanFromContext(ctx)
-	span.SetAttributes(attribute.String("kindling.winner", race.Winner))
-	for _, a := range race.Attempts {
-		span.AddEvent("kindling.attempt", trace.WithAttributes(
-			attribute.String("transport", a.Transport),
-			attribute.String("outcome", string(a.Outcome)),
-			attribute.Int("status", a.StatusCode),
-		))
-	}
-})
+k, err := kindling.NewKindling("myapp",
+	kindling.WithProxyless("example.com"),
+	kindling.WithRaceObserver(func(ctx context.Context, race kindling.Race) {
+		span := trace.SpanFromContext(ctx)
+		span.SetAttributes(attribute.String("kindling.winner", race.Winner))
+		for _, a := range race.Attempts {
+			span.AddEvent("kindling.attempt", trace.WithAttributes(
+				attribute.String("transport", a.Transport),
+				attribute.String("outcome", string(a.Outcome)),
+				attribute.Int("status", a.StatusCode),
+			))
+		}
+	}),
+)
 ```
 
 ## Example

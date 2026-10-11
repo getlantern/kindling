@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -114,4 +115,73 @@ func TestRaceObserver_NonIdempotentFailure(t *testing.T) {
 	a := byTransport(race)
 	assert.Equal(t, OutcomeRequestFailed, a["smart"].Outcome)
 	assert.ErrorIs(t, a["smart"].Err, rtErr)
+}
+
+type slowRT struct {
+	wait time.Duration
+	code int
+}
+
+func (s slowRT) RoundTrip(*http.Request) (*http.Response, error) {
+	time.Sleep(s.wait)
+	return statusRT(s.code).RoundTrip(nil)
+}
+
+type respAndErrRT struct{}
+
+func (respAndErrRT) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader(""))}, errors.New("stream reset")
+}
+
+// A failure that lands while the winner is sending its request is still
+// reported as a failure, not unfinished.
+func TestRaceObserver_FailureDuringWinnerRequest(t *testing.T) {
+	race, _, err := observe(t, http.MethodGet,
+		&mockTransport{name: "slow-request", newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+			return slowRT{wait: 100 * time.Millisecond, code: http.StatusOK}, nil
+		}},
+		&mockTransport{name: "late-fail", newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+			time.Sleep(20 * time.Millisecond)
+			return nil, errors.New("blocked")
+		}},
+	)
+	require.NoError(t, err)
+	a := byTransport(race)
+	assert.Equal(t, OutcomeWon, a["slow-request"].Outcome)
+	assert.Equal(t, OutcomeConnectFailed, a["late-fail"].Outcome)
+}
+
+func TestRaceObserver_ResponseWithErrorIsNotAWin(t *testing.T) {
+	race, _, err := observe(t, http.MethodPost,
+		&mockTransport{name: "smart", newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+			return respAndErrRT{}, nil
+		}},
+	)
+	require.Error(t, err)
+	assert.Empty(t, race.Winner)
+	assert.Equal(t, OutcomeRequestFailed, byTransport(race)["smart"].Outcome)
+}
+
+func TestRaceObserver_DuplicateNames(t *testing.T) {
+	race, _, err := observe(t, http.MethodGet,
+		&mockTransport{name: "custom", newRoundTripper: returns(http.StatusOK)},
+		&mockTransport{name: "custom", newRoundTripper: func(ctx context.Context, _ string) (http.RoundTripper, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "custom", race.Winner)
+	var outcomes []Outcome
+	for _, a := range race.Attempts {
+		outcomes = append(outcomes, a.Outcome)
+	}
+	assert.ElementsMatch(t, []Outcome{OutcomeWon, OutcomeUnfinished}, outcomes, "each same-named transport gets its own attempt")
+}
+
+func TestRaceObserver_NilRecordIsInert(t *testing.T) {
+	var r *raceRecord
+	assert.Zero(t, r.racing([]Transport{&mockTransport{name: "x"}}))
+	r.add(0, OutcomeWon, 200, nil)
+	r.won(0)
 }

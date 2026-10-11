@@ -53,36 +53,53 @@ func WithRaceObserver(fn func(ctx context.Context, race Race)) Option {
 }
 
 // raceRecord collects one request's attempts. Only the goroutine running
-// RoundTrip touches it.
+// RoundTrip touches it. A nil record, used when nobody observes, records nothing.
+// Attempts are keyed by race position, since transport names needn't be unique.
 type raceRecord struct {
 	start    time.Time
 	race     Race
-	reported map[string]bool
-	raced    []string
+	names    []string // by race position
+	reported []bool   // by race position
+	ids      []int    // race position of each entry in race.Attempts
 }
 
 func newRaceRecord() *raceRecord {
-	return &raceRecord{start: time.Now(), reported: make(map[string]bool)}
+	return &raceRecord{start: time.Now()}
 }
 
-func (r *raceRecord) racing(tier []Transport) {
-	for _, tr := range tier {
-		r.raced = append(r.raced, tr.Name())
+// racing registers a tier and returns the race position of its first transport.
+func (r *raceRecord) racing(tier []Transport) int {
+	if r == nil {
+		return 0
 	}
+	base := len(r.names)
+	for _, tr := range tier {
+		r.names = append(r.names, tr.Name())
+		r.reported = append(r.reported, false)
+	}
+	return base
 }
 
-func (r *raceRecord) add(name string, o Outcome, status int, err error) {
-	r.reported[name] = true
+func (r *raceRecord) add(id int, o Outcome, status int, err error) {
+	if r == nil || id < 0 || id >= len(r.names) {
+		return
+	}
+	r.reported[id] = true
+	r.ids = append(r.ids, id)
 	r.race.Attempts = append(r.race.Attempts, Attempt{
-		Transport: name, Outcome: o, StatusCode: status, Err: err, Elapsed: time.Since(r.start),
+		Transport: r.names[id], Outcome: o, StatusCode: status, Err: err, Elapsed: time.Since(r.start),
 	})
 }
 
-// won marks name's response as the one returned, upgrading a held fallback.
-func (r *raceRecord) won(name string) {
-	r.race.Winner = name
-	for i := len(r.race.Attempts) - 1; i >= 0; i-- {
-		if r.race.Attempts[i].Transport == name {
+// won marks the response from race position id as the one returned, upgrading
+// a held fallback.
+func (r *raceRecord) won(id int) {
+	if r == nil || id < 0 || id >= len(r.names) {
+		return
+	}
+	r.race.Winner = r.names[id]
+	for i := len(r.ids) - 1; i >= 0; i-- {
+		if r.ids[i] == id {
 			r.race.Attempts[i].Outcome = OutcomeWon
 			return
 		}
@@ -91,10 +108,9 @@ func (r *raceRecord) won(name string) {
 
 // finish adds the transports that never reported and returns the race.
 func (r *raceRecord) finish() Race {
-	for _, name := range r.raced {
-		if !r.reported[name] {
-			r.reported[name] = true
-			r.race.Attempts = append(r.race.Attempts, Attempt{Transport: name, Outcome: OutcomeUnfinished, Elapsed: time.Since(r.start)})
+	for id, done := range r.reported {
+		if !done {
+			r.add(id, OutcomeUnfinished, 0, nil)
 		}
 	}
 	return r.race
