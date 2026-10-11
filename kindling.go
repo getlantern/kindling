@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -397,7 +398,7 @@ func WithProxylessAliases(aliases map[string]string) Option {
 			if from == "" || to == "" {
 				return fmt.Errorf("proxyless alias %q -> %q: empty host", from, to)
 			}
-			m[from] = to
+			m[strings.ToLower(from)] = to
 		}
 		k.proxylessAliases = m
 		return nil

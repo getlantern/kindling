@@ -46,17 +46,31 @@ func TestWithProxylessAliases(t *testing.T) {
 		return dialer, nil
 	})
 
-	k, err := NewKindling("test",
-		WithProxylessAliases(map[string]string{"origin.example": "alias.example"}),
-		WithProxyless("alias.example", "other.example"),
-	)
-	if err != nil {
-		t.Fatalf("NewKindling() error = %v", err)
+	aliases := WithProxylessAliases(map[string]string{"Origin.Example": "alias.example"})
+	proxyless := WithProxyless("alias.example", "other.example")
+	// Aliases are read when proxyless is built, so option order must not matter.
+	for _, opts := range [][]Option{{aliases, proxyless}, {proxyless, aliases}} {
+		k, err := NewKindling("test", opts...)
+		if err != nil {
+			t.Fatalf("NewKindling() error = %v", err)
+		}
+		checkAliases(t, k.NewHTTPClient(), dialer)
 	}
-	client := k.NewHTTPClient()
 
+	mu.Lock()
+	defer mu.Unlock()
+	for _, d := range searched {
+		if d == "origin.example" {
+			t.Errorf("searched the aliased origin; searches = %v", searched)
+		}
+	}
+}
+
+func checkAliases(t *testing.T, client *http.Client, dialer *recordingDialer) {
+	t.Helper()
 	for _, tc := range []struct{ url, wantBody, wantDial string }{
 		{"http://origin.example/v1/config", "alias.example/v1/config", "alias.example:80"},
+		{"http://ORIGIN.example/v1/config", "alias.example/v1/config", "alias.example:80"},
 		{"http://other.example/plans", "other.example/plans", "other.example:80"},
 	} {
 		req, err := http.NewRequest(http.MethodGet, tc.url, nil)
@@ -81,14 +95,6 @@ func TestWithProxylessAliases(t *testing.T) {
 		dialer.mu.Unlock()
 		if last != tc.wantDial {
 			t.Errorf("GET %s: dialed %q, want %q", tc.url, last, tc.wantDial)
-		}
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	for _, d := range searched {
-		if d == "origin.example" {
-			t.Errorf("searched the aliased origin; searches = %v", searched)
 		}
 	}
 }

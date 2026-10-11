@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -165,7 +166,7 @@ func aliasAddr(aliases map[string]string, addr string) (string, string) {
 	if err != nil {
 		return "", addr
 	}
-	alias, ok := aliases[host]
+	alias, ok := aliases[strings.ToLower(host)]
 	if !ok {
 		return "", addr
 	}
