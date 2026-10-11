@@ -640,7 +640,7 @@ func TestGroupByPriority(t *testing.T) {
 	t.Run("OrdersTiersAscending_PreservesIntraTierOrder", func(t *testing.T) {
 		t.Parallel()
 		in := []Transport{
-			&mockTransport{name: "dnstt", priority: priorityLastResort},
+			&mockTransport{name: "soar", priority: priorityLastResort},
 			&mockTransport{name: "domainfront"},
 			&mockTransport{name: "amp"},
 			&mockTransport{name: "mid", priority: 50},
@@ -649,7 +649,7 @@ func TestGroupByPriority(t *testing.T) {
 		require.Len(t, tiers, 3)
 		assert.Equal(t, []string{"domainfront", "amp"}, names(tiers[0]), "default tier first, input order preserved")
 		assert.Equal(t, []string{"mid"}, names(tiers[1]), "priority 50 in the middle")
-		assert.Equal(t, []string{"dnstt"}, names(tiers[2]), "last-resort tier last")
+		assert.Equal(t, []string{"soar"}, names(tiers[2]), "last-resort tier last")
 	})
 
 	t.Run("Empty", func(t *testing.T) {
@@ -665,12 +665,12 @@ func TestGroupByPriority(t *testing.T) {
 		assert.Equal(t, priorityDefault, priorityOf(bare),
 			"a Transport that doesn't implement Priority() must default to priorityDefault")
 		tiers := groupByPriority([]Transport{
-			&mockTransport{name: "dnstt", priority: priorityLastResort},
+			&mockTransport{name: "soar", priority: priorityLastResort},
 			bare,
 		})
 		require.Len(t, tiers, 2)
 		assert.Equal(t, []string{"bare"}, names(tiers[0]), "a transport without Priority() lands in the default tier")
-		assert.Equal(t, []string{"dnstt"}, names(tiers[1]))
+		assert.Equal(t, []string{"soar"}, names(tiers[1]))
 	})
 }
 

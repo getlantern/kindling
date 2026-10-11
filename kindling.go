@@ -27,7 +27,7 @@ type TransportName string
 
 const (
 	TransportDomainfront TransportName = "domainfront"
-	TransportDNSTunnel   TransportName = "dnstt"
+	TransportDNSTunnel   TransportName = "soar"
 	TransportAMP         TransportName = "amp"
 	TransportSmart       TransportName = "smart"
 )
