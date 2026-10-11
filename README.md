@@ -61,7 +61,7 @@ You can then use this as follows:
 ```go
 k := kindling.NewKindling(
 	"myapp",
-    kindling.WithTransport(myCoolTransport),
+	kindling.WithTransport(myCoolTransport),
 	kindling.WithTransport(myCoolerTransport),
 )
 httpClient := k.NewHTTPClient()
