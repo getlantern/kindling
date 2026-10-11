@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
 	"sync"
@@ -416,8 +417,11 @@ func bareHost(h string) bool {
 	if h == "" || strings.ContainsAny(h, "[]/") {
 		return false
 	}
-	_, _, err := net.SplitHostPort(h)
-	return err != nil
+	if strings.Contains(h, ":") {
+		ip, err := netip.ParseAddr(h)
+		return err == nil && ip.Is6()
+	}
+	return true
 }
 
 // --- Internal transport type ---

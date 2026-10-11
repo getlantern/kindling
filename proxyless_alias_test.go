@@ -109,6 +109,7 @@ func TestWithProxylessAliases_EmptyHost(t *testing.T) {
 		{"origin.example": "alias.example:8443"},
 		{"origin.example:443": "alias.example"},
 		{"origin.example": "[2001:db8::1]"},
+		{"origin.example": "not:an:ipv6"},
 	} {
 		if _, err := NewKindling("test", WithProxylessAliases(m), WithProxyless("alias.example")); err == nil {
 			t.Errorf("WithProxylessAliases(%v): want error", m)
@@ -196,5 +197,11 @@ func TestWithProxylessAliases_TargetCaseSelectsSearch(t *testing.T) {
 	defer mu.Unlock()
 	if len(searched) != 1 || searched[0] != "alias.example" {
 		t.Errorf("searched = %v; want only [alias.example]", searched)
+	}
+}
+
+func TestWithProxylessAliases_IPv6Target(t *testing.T) {
+	if _, err := NewKindling("test", WithProxylessAliases(map[string]string{"origin.example": "2001:db8::1"}), WithProxyless("origin.example")); err != nil {
+		t.Errorf("IPv6 alias rejected: %v", err)
 	}
 }
