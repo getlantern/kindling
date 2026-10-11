@@ -76,11 +76,19 @@ func WithDNSTunnel(d DNSTunnel) Option {
 		if d == nil {
 			return fmt.Errorf("dns tunnel is nil")
 		}
-		k.transports = append(k.transports, &namedTransport{
-			name:     string(TransportDNSTunnel),
-			newRT:    d.NewRoundTripper,
-			priority: priorityLastResort,
-		})
+		nt := &namedTransport{
+			name:         string(TransportDNSTunnel),
+			isStreamable: true,
+			newRT:        d.NewRoundTripper,
+			priority:     priorityLastResort,
+		}
+		if tt, ok := d.(interface{ RequestTimeout() time.Duration }); ok {
+			nt.reqTimeout = tt.RequestTimeout()
+		}
+		if tt, ok := d.(interface{ MaxLength() int }); ok {
+			nt.maxLength = tt.MaxLength()
+		}
+		k.transports = append(k.transports, nt)
 		return nil
 	}
 }

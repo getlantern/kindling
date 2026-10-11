@@ -272,6 +272,9 @@ func TestWithDNSTunnelOverrides(t *testing.T) {
 			t.Fatalf("want 1 transport, got %d", len(k.transports))
 		}
 		tr := k.transports[0]
+		if tr.Name() != "soar" {
+			t.Errorf("Name() = %q, want %q", tr.Name(), "soar")
+		}
 		if tr.RequestTimeout() != 0 {
 			t.Errorf("RequestTimeout() = %v, want 0", tr.RequestTimeout())
 		}
