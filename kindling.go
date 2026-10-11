@@ -271,6 +271,9 @@ func WithTransport(t Transport) Option {
 		if t == nil {
 			return fmt.Errorf("transport is nil")
 		}
+		if t.Name() == "" {
+			return fmt.Errorf("transport has no name")
+		}
 		k.transports = append(k.transports, t)
 		return nil
 	}

@@ -150,6 +150,7 @@ func TestRaceObserver_FailureDuringWinnerRequest(t *testing.T) {
 	a := byTransport(race)
 	assert.Equal(t, OutcomeWon, a["slow-request"].Outcome)
 	assert.Equal(t, OutcomeConnectFailed, a["late-fail"].Outcome)
+	assert.Less(t, a["late-fail"].Elapsed, 90*time.Millisecond, "timed when it failed, not when the winner finished")
 }
 
 func TestRaceObserver_ResponseWithErrorIsNotAWin(t *testing.T) {
@@ -209,9 +210,14 @@ func TestRaceObserver_BudgetCutoffIsUnfinished(t *testing.T) {
 	cancel()
 	rec := newRaceRecord()
 	rec.racing([]Transport{&mockTransport{name: "cutoff"}, &mockTransport{name: "blocked"}})
-	rec.connectFailed(ctx, 0, fmt.Errorf("dial: %w", ctx.Err()))
-	rec.connectFailed(ctx, 1, errors.New("connection refused"))
+	rec.connectFailed(ctx, 0, fmt.Errorf("dial: %w", ctx.Err()), time.Now())
+	rec.connectFailed(ctx, 1, errors.New("connection refused"), time.Now())
 	a := byTransport(rec.finish())
 	assert.Equal(t, OutcomeUnfinished, a["cutoff"].Outcome)
 	assert.Equal(t, OutcomeConnectFailed, a["blocked"].Outcome)
+}
+
+func TestWithTransport_RejectsEmptyName(t *testing.T) {
+	_, err := NewKindling("test", WithTransport(&mockTransport{name: ""}))
+	assert.Error(t, err)
 }

@@ -94,7 +94,8 @@ func newRaceTransport(appName string, log *slog.Logger, panicListener func(strin
 type connectResult struct {
 	rt   http.RoundTripper
 	name string
-	id   int // race position, for the observer
+	id   int       // race position, for the observer
+	at   time.Time // when the outcome happened
 	err  error
 }
 
@@ -241,7 +242,7 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 				// was unattributable unless its own text happened to say which
 				// strategy produced it.
 				heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", result.name, result.err))
-				rec.connectFailed(ctx, result.id, result.err)
+				rec.connectFailed(ctx, result.id, result.err, result.at)
 				continue
 			}
 
@@ -327,7 +328,7 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 				case r := <-results:
 					if r.err != nil {
 						heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", r.name, r.err))
-						rec.connectFailed(ctx, r.id, r.err)
+						rec.connectFailed(ctx, r.id, r.err, r.at)
 					}
 				default:
 					break drain
@@ -361,7 +362,7 @@ func drainReady(ctx context.Context, results <-chan connectResult, rec *raceReco
 		select {
 		case r := <-results:
 			if r.err != nil {
-				rec.connectFailed(ctx, r.id, r.err)
+				rec.connectFailed(ctx, r.id, r.err, r.at)
 			}
 		default:
 			return
@@ -418,20 +419,20 @@ func (t *raceTransport) connect(ctx context.Context, tr Transport, id int, addr 
 		if r := recover(); r != nil {
 			msg := fmt.Sprintf("panic in transport %s: %v", tr.Name(), r)
 			t.panicListener(msg)
-			results <- connectResult{name: tr.Name(), id: id, err: errors.New(msg)}
+			results <- connectResult{name: tr.Name(), id: id, at: time.Now(), err: errors.New(msg)}
 		}
 	}()
 
 	rt, err := tr.NewRoundTripper(ctx, addr)
 	if err != nil {
-		results <- connectResult{name: tr.Name(), id: id, err: err}
+		results <- connectResult{name: tr.Name(), id: id, at: time.Now(), err: err}
 		return
 	}
 	if ctx.Err() != nil {
-		results <- connectResult{name: tr.Name(), id: id, err: ctx.Err()}
+		results <- connectResult{name: tr.Name(), id: id, at: time.Now(), err: ctx.Err()}
 		return
 	}
-	results <- connectResult{rt: rt, name: tr.Name(), id: id}
+	results <- connectResult{rt: rt, name: tr.Name(), id: id, at: time.Now()}
 }
 
 // transportPriority is an optional interface a Transport may implement to

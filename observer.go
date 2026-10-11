@@ -83,23 +83,29 @@ func (r *raceRecord) racing(tier []Transport) int {
 }
 
 func (r *raceRecord) add(id int, o Outcome, status int, err error) {
+	r.addAt(id, o, status, err, time.Now())
+}
+
+// addAt records an outcome that happened at a known time, which can be well
+// before the race goroutine gets to it.
+func (r *raceRecord) addAt(id int, o Outcome, status int, err error, at time.Time) {
 	if r == nil || id < 0 || id >= len(r.names) {
 		return
 	}
 	r.reported[id] = true
 	r.ids = append(r.ids, id)
 	r.race.Attempts = append(r.race.Attempts, Attempt{
-		Transport: r.names[id], Outcome: o, StatusCode: status, Err: err, Elapsed: time.Since(r.start),
+		Transport: r.names[id], Outcome: o, StatusCode: status, Err: err, Elapsed: at.Sub(r.start),
 	})
 }
 
 // connectFailed records a connection failure, unless the request's own budget
 // ending caused it: that attempt was cut off, so it stays unfinished.
-func (r *raceRecord) connectFailed(ctx context.Context, id int, err error) {
+func (r *raceRecord) connectFailed(ctx context.Context, id int, err error, at time.Time) {
 	if cause := ctx.Err(); cause != nil && errors.Is(err, cause) {
 		return
 	}
-	r.add(id, OutcomeConnectFailed, 0, err)
+	r.addAt(id, OutcomeConnectFailed, 0, err, at)
 }
 
 // won marks the response from race position id as the one returned, upgrading
