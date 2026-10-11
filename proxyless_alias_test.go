@@ -106,6 +106,9 @@ func TestWithProxylessAliases_EmptyHost(t *testing.T) {
 		{"": "alias.example"},
 		{"origin.example": ""},
 		{"Origin.Example": "a.example", "origin.example": "b.example"},
+		{"origin.example": "alias.example:8443"},
+		{"origin.example:443": "alias.example"},
+		{"origin.example": "[2001:db8::1]"},
 	} {
 		if _, err := NewKindling("test", WithProxylessAliases(m), WithProxyless("alias.example")); err == nil {
 			t.Errorf("WithProxylessAliases(%v): want error", m)

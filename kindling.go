@@ -390,13 +390,14 @@ func WithProxyless(domains ...string) Option {
 // WithProxylessAliases makes the proxyless transport send requests for each key
 // host to its value instead, for example a CDN-proxied name for an origin whose
 // own edge refuses some countries. Other transports keep the original host.
+// Keys and values are bare hosts; the request's port is kept.
 // List the alias hosts in WithProxyless so each gets its own strategy search.
 func WithProxylessAliases(aliases map[string]string) Option {
 	return func(k *kindling) error {
 		m := make(map[string]string, len(aliases))
 		for from, to := range aliases {
-			if from == "" || to == "" {
-				return fmt.Errorf("proxyless alias %q -> %q: empty host", from, to)
+			if !bareHost(from) || !bareHost(to) {
+				return fmt.Errorf("proxyless alias %q -> %q: want bare hosts, without ports or brackets", from, to)
 			}
 			key := strings.ToLower(from)
 			if _, dup := m[key]; dup {
@@ -407,6 +408,16 @@ func WithProxylessAliases(aliases map[string]string) Option {
 		k.proxylessAliases = m
 		return nil
 	}
+}
+
+// bareHost reports whether h is a non-empty host with no port or brackets: the
+// request's own port is kept, so a port here would be doubled.
+func bareHost(h string) bool {
+	if h == "" || strings.ContainsAny(h, "[]/") {
+		return false
+	}
+	_, _, err := net.SplitHostPort(h)
+	return err != nil
 }
 
 // --- Internal transport type ---
