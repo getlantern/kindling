@@ -78,6 +78,7 @@ type raceTransport struct {
 	panicListener func(string)
 	appName       string
 	log           *slog.Logger
+	observer      func(context.Context, Race)
 }
 
 func newRaceTransport(appName string, log *slog.Logger, panicListener func(string), transports []Transport) *raceTransport {
@@ -97,6 +98,10 @@ type connectResult struct {
 }
 
 func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rec := newRaceRecord()
+	if t.observer != nil {
+		defer func() { t.observer(req.Context(), rec.finish()) }()
+	}
 	bodyBytes, err := drainRequestBody(req)
 	if err != nil {
 		return nil, fmt.Errorf("reading request body: %w", err)
@@ -119,6 +124,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// transports only get dialed once every faster tier has failed. heldResp /
 	// heldErr carry the best fallback seen across all tiers so far.
 	var heldResp *http.Response
+	var heldName string
 	var heldErr error
 	for i, tier := range tiers {
 		// All transports in a tier share a priority, so the first reports it.
@@ -129,16 +135,20 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			"count", len(tier),
 			"bodyLength", len(bodyBytes),
 		)
-		res := t.raceTier(ctx, req, tier, bodyBytes, idempotent)
+		rec.racing(tier)
+		res := t.raceTier(ctx, req, tier, bodyBytes, idempotent, rec)
 		if res.final {
 			drainAndClose(heldResp)
+			if res.resp != nil {
+				rec.won(res.name)
+			}
 			return res.resp, res.err
 		}
 		// A retryable response held by this tier supersedes an earlier tier's fallback; an
 		// empty resp leaves the earlier one in place.
 		if res.resp != nil {
 			drainAndClose(heldResp)
-			heldResp = res.resp
+			heldResp, heldName = res.resp, res.name
 		}
 		if res.err != nil {
 			// Across tiers for the same reason as within one. A budget that
@@ -162,6 +172,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	// All tiers exhausted (or the budget ran out) without a usable response.
 	if heldResp != nil {
+		rec.won(heldName)
 		return heldResp, nil
 	}
 	if ctx.Err() != nil {
@@ -191,6 +202,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // earlier tier; it stops iterating because the shared ctx is then done.
 type tierResult struct {
 	resp  *http.Response
+	name  string // transport that produced resp
 	err   error
 	final bool
 }
@@ -199,7 +211,7 @@ type tierResult struct {
 // applies the method-aware retry policy within that tier. See [raceTransport]
 // for the retry semantics; the only addition is that an exhausted tier returns
 // final=false so RoundTrip can advance to the next tier.
-func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []Transport, bodyBytes []byte, idempotent bool) tierResult {
+func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []Transport, bodyBytes []byte, idempotent bool, rec *raceRecord) tierResult {
 	// Each goroutine sends exactly one result, so the channel receives
 	// len(tier) messages.
 	results := make(chan connectResult, len(tier))
@@ -209,6 +221,7 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 	}
 
 	var heldResp *http.Response
+	var heldName string
 	var heldErr error
 
 	for remaining := len(tier); remaining > 0; remaining-- {
@@ -226,6 +239,7 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 				// was unattributable unless its own text happened to say which
 				// strategy produced it.
 				heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", result.name, result.err))
+				rec.add(result.name, OutcomeConnectFailed, 0, result.err)
 				continue
 			}
 
@@ -243,9 +257,12 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 				// POST, so without this the one path under investigation was
 				// the one path still returning an unattributed error.
 				if err != nil {
+					rec.add(result.name, OutcomeRequestFailed, statusOf(resp), err)
 					err = fmt.Errorf("transport %s: %w", result.name, err)
+				} else {
+					rec.add(result.name, OutcomeWon, resp.StatusCode, nil)
 				}
-				return tierResult{resp: resp, err: err, final: true}
+				return tierResult{resp: resp, name: result.name, err: err, final: true}
 			}
 
 			if err != nil {
@@ -258,6 +275,7 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 				// err is non-nil (the spec only requires resp == nil when
 				// err == nil for the success direction). Drain + close
 				// defensively so we don't leak the body / connection.
+				rec.add(result.name, OutcomeRequestFailed, statusOf(resp), err)
 				drainAndClose(resp)
 				heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", result.name, err))
 				continue
@@ -273,15 +291,17 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 					"status", resp.StatusCode,
 				)
 				drainAndClose(heldResp)
-				heldResp = resp
+				heldResp, heldName = resp, result.name
 				heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: http status %d", result.name, resp.StatusCode))
+				rec.add(result.name, OutcomeRetryStatus, resp.StatusCode, nil)
 				continue
 			}
 
 			// 2xx, 3xx, or any other 4xx on an idempotent method: that 4xx is
 			// the server's verdict on the request itself, retry won't help.
 			drainAndClose(heldResp)
-			return tierResult{resp: resp, final: true}
+			rec.add(result.name, OutcomeWon, resp.StatusCode, nil)
+			return tierResult{resp: resp, name: result.name, final: true}
 
 		case <-ctx.Done():
 			// Budget spent. Hand back whatever this tier held (if anything) as
@@ -303,6 +323,7 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 				case r := <-results:
 					if r.err != nil {
 						heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", r.name, r.err))
+						rec.add(r.name, OutcomeConnectFailed, 0, r.err)
 					}
 				default:
 					break drain
@@ -317,13 +338,21 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 			} else if heldResp == nil {
 				err = ctx.Err()
 			}
-			return tierResult{resp: heldResp, err: err}
+			return tierResult{resp: heldResp, name: heldName, err: err}
 		}
 	}
 
 	// Tier exhausted without a usable response; bubble up the best fallback so
 	// RoundTrip can try the next tier (or return it if none succeed).
-	return tierResult{resp: heldResp, err: heldErr}
+	return tierResult{resp: heldResp, name: heldName, err: heldErr}
+}
+
+// statusOf returns resp's status code, or 0 without a response.
+func statusOf(resp *http.Response) int {
+	if resp == nil {
+		return 0
+	}
+	return resp.StatusCode
 }
 
 // drainAndClose drains and closes a response body so the connection can be

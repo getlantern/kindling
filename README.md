@@ -32,6 +32,27 @@ kindling.WithProxylessAliases(map[string]string{"df.iantem.io": "df.getiantem.or
 List the alias, not the original, in `WithProxyless`, so the strategy search runs against the host
 proxyless actually connects to.
 
+## Observing races
+
+`WithRaceObserver` reports, after every request, which transport's response was returned and what
+happened to each transport tried: connect failure, request error, a 5xx or 403 that sent kindling to
+the next transport, or still connecting when another won. Callers can attach it to their own
+tracing, for example as span events.
+
+```go
+kindling.WithRaceObserver(func(ctx context.Context, race kindling.Race) {
+	span := trace.SpanFromContext(ctx)
+	span.SetAttributes(attribute.String("kindling.winner", race.Winner))
+	for _, a := range race.Attempts {
+		span.AddEvent("kindling.attempt", trace.WithAttributes(
+			attribute.String("transport", a.Transport),
+			attribute.String("outcome", string(a.Outcome)),
+			attribute.Int("status", a.StatusCode),
+		))
+	}
+})
+```
+
 ## Example
 
 ```go
