@@ -92,7 +92,8 @@ type Transport interface {
 	// IsStreamable reports whether this transport supports streaming responses (text/event-stream).
 	IsStreamable() bool
 
-	// Name identifies this transport for logging and debugging.
+	// Name identifies this transport in logs and race reports. It must not be
+	// empty: WithTransport rejects a transport without one.
 	Name() string
 
 	// RequestTimeout returns the maximum time a single request may spend on this transport.
