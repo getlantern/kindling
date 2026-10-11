@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta property="og:title" content="Kindling">
+<meta property="og:description" content="Get an app's first requests through censoring firewalls by racing several circumvention techniques.">
+<meta property="og:url" content="https://kindling.lantern.io/">
+<meta property="og:type" content="website">
+<link rel="canonical" href="https://kindling.lantern.io/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'%3E%3Cpath d='M4 24 L14 17 L24 24' fill='none' stroke='%231d1b20' stroke-width='2.4' stroke-linecap='round'/%3E%3Cpath d='M6 20 L22 20' stroke='%231d1b20' stroke-width='2.4' stroke-linecap='round'/%3E%3Cpath d='M14 3 C18 8 19 11 17 14 C16 16 12 16 11 14 C10 12 11 10 12.5 9 C12.5 11 14 11.5 14.5 10.5 C15.5 8.5 14.5 6 14 3 Z' fill='%23d9481a'/%3E%3C/svg%3E">
+<title>Kindling</title>
+<meta name="description" content="Kindling is a Go library that gets an app's first requests through censoring firewalls by racing domain fronting, proxyless dialing, AMP caching and the Soar DNS tunnel.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Tilt+Warp&family=Petrona:ital,wght@0,400;0,600;1,400&family=Fragment+Mono&display=swap">
+<style>
+/* Layout: a fire-starting field manual. Cool ash paper, soot ink, one ember gradient that only
+   appears where something catches; race lanes as the hero, then numbered steps of the race. */
+:root {
+  --ash: #e9e8e4;
+  --ash-2: #dedcd6;
+  --soot: #1d1b20;
+  --char: #5d5852;
+  --smoke: #c9c5be;
+  --ember: #d9481a;
+  --flame: #f0a032;
+  --code-bg: #f3f2ee;
+  --band: #1d1b20; --band-fg: #ece6df; --band-muted: #a39c94; --band-line: #4c464d;
+  --display: "Tilt Warp", "Arial Rounded MT Bold", "Trebuchet MS", sans-serif;
+  --body: "Petrona", Georgia, "Times New Roman", serif;
+  --mono: "Fragment Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --wrap: 1120px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ash: #141216; --ash-2: #1c191e; --soot: #eee8e2; --char: #a59e96; --smoke: #3a3539;
+    --ember: #ff6a33; --flame: #ffbe5c; --code-bg: #19161b; --band: #241f27; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --ash: #141216; --ash-2: #1c191e; --soot: #eee8e2; --char: #a59e96; --smoke: #3a3539;
+  --ember: #ff6a33; --flame: #ffbe5c; --code-bg: #19161b; --band: #241f27; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body { margin: 0; background: var(--ash); color: var(--soot); font: 400 18px/1.62 var(--body); }
+a { color: var(--ember); text-underline-offset: 3px; }
+a:hover { color: var(--soot); }
+:focus-visible { outline: 2px solid var(--ember); outline-offset: 3px; }
+.wrap { max-width: var(--wrap); margin: 0 auto; padding-inline: 20px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 400; text-wrap: balance; margin: 0; line-height: 1.02; }
+h2 { font-size: clamp(2.1rem, 5vw, 3.3rem); letter-spacing: -.01em; }
+h3 { font-size: 1.35rem; }
+p { margin: 0; max-width: 64ch; }
+code { font-family: var(--mono); font-size: .82em; background: var(--ash-2); padding: .08em .35em; }
+.kicker { font: 400 .74rem/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--char); }
+.kicker b { color: var(--ember); font-weight: 400; }
+.lede { font-size: 1.15rem; color: var(--char); }
+.ember-text {
+  background: linear-gradient(180deg, var(--flame) 10%, var(--ember) 80%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+
+/* bar */
+.bar { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding-block: 18px; }
+.mark { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--soot); font: 400 1.35rem/1 var(--display); }
+.mark svg { width: 28px; height: 28px; }
+.nav { display: flex; flex-wrap: wrap; gap: 6px 22px; font: 400 .74rem/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.nav a { color: var(--char); text-decoration: none; }
+.nav a:hover { color: var(--ember); }
+
+/* hero */
+.hero { padding-block: 34px 26px; display: grid; gap: 22px; }
+.byline { font: 400 .76rem/1.4 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--char); }
+.byline a { color: var(--ember); text-decoration: none; border-bottom: 1px solid currentColor; }
+.hero h1 { font-size: clamp(4.6rem, 15vw, 11rem); line-height: .82; letter-spacing: -.04em; }
+.hero .sub { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px 48px; align-items: end; }
+.hero .sub .big { font: 400 clamp(1.45rem, 3vw, 2rem)/1.2 var(--display); max-width: 22ch; }
+.cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
+.btn { font: 400 .78rem/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; text-decoration: none; padding: 14px 18px; border: 2px solid var(--soot); color: var(--soot); border-radius: 999px; }
+.btn.hot { background: var(--soot); color: var(--ash); }
+.btn:hover { border-color: var(--ember); color: var(--ember); }
+.btn.hot:hover { background: var(--ember); color: var(--ash); border-color: var(--ember); }
+
+/* race */
+.race { background: var(--band); color: var(--band-fg); }
+.race .wrap { padding-block: 22px 18px; display: grid; gap: 10px; }
+.race-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 20px; align-items: baseline; }
+.race-head h2 { font-size: 1.25rem; color: var(--band-fg); }
+.race-head h2 span { color: var(--flame); }
+.race-head p { font: 400 .74rem/1.5 var(--mono); color: var(--band-muted); max-width: none; }
+.scenes { display: flex; flex-wrap: wrap; gap: 6px; }
+.scene { appearance: none; cursor: pointer; font: 400 .7rem/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; padding: 8px 12px; border-radius: 999px; border: 1px solid var(--band-line); background: transparent; color: var(--band-fg); }
+.scene[aria-pressed="true"] { background: var(--band-fg); color: var(--band); border-color: var(--band-fg); }
+.scene:hover { border-color: var(--flame); }
+#lanes { display: block; width: 100%; height: clamp(300px, 34vw, 380px); }
+.race-note { font: 400 .72rem/1.5 var(--mono); color: var(--band-muted); }
+
+/* sections */
+section { padding-block: 96px 10px; }
+.head { display: grid; gap: 14px; margin-bottom: 40px; }
+
+/* problem */
+.problem { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 32px 64px; align-items: start; }
+.problem p + p { margin-top: 1em; }
+.boot { margin: 0; padding: 0; list-style: none; border-left: 3px solid var(--smoke); display: grid; gap: 0; }
+.boot li { padding: 12px 0 12px 20px; position: relative; font-size: .98rem; color: var(--char); }
+.boot li::before { content: ""; position: absolute; left: -8px; top: 19px; width: 13px; height: 13px; border-radius: 50%; background: var(--ash); border: 3px solid var(--smoke); }
+.boot li.hot { color: var(--soot); }
+.boot li.hot::before { border-color: var(--ember); background: var(--flame); }
+.boot b { font: 400 .72rem/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; display: block; margin-bottom: 4px; color: var(--char); }
+.boot li.hot b { color: var(--ember); }
+
+/* fuel */
+.fuel { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 18px; }
+.stick { grid-column: span 2; border: 2px solid var(--soot); border-radius: 18px; padding: 22px 22px 24px; display: grid; gap: 12px; align-content: start; background: var(--ash); }
+.stick.wide { grid-column: span 3; }
+.stick .top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.stick .name { font: 400 .7rem/1 var(--mono); letter-spacing: .1em; color: var(--char); }
+.stick .tier { font: 400 .66rem/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; padding: 5px 8px; border-radius: 999px; border: 1px solid var(--soot); white-space: nowrap; }
+.stick.last { border-style: dashed; border-color: var(--ember); }
+.stick.last .tier { border-color: var(--ember); color: var(--ember); }
+.stick p { font-size: .96rem; color: var(--char); }
+.stick ul { margin: 0; padding-left: 1.1em; font-size: .9rem; color: var(--char); display: grid; gap: 4px; }
+.stick .limits { display: flex; flex-wrap: wrap; gap: 6px; }
+.stick .limits span { font: 400 .66rem/1 var(--mono); background: var(--ash-2); padding: 6px 8px; border-radius: 6px; }
+.stick.yours { background: var(--ash-2); border-style: dotted; }
+
+/* how the race works */
+.steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; counter-reset: s; border-top: 2px solid var(--soot); }
+.step { padding: 24px 22px 26px 0; display: grid; gap: 10px; align-content: start; }
+.step + .step { padding-left: 22px; border-left: 1px solid var(--smoke); }
+.step::before { counter-increment: s; content: counter(s); font: 400 2.6rem/1 var(--display); color: var(--ember); }
+.step p { font-size: .95rem; color: var(--char); }
+
+.retry { margin-top: 56px; overflow-x: auto; }
+.retry table { width: 100%; border-collapse: collapse; min-width: 640px; }
+.retry th, .retry td { text-align: left; padding: 14px 16px 14px 0; border-bottom: 1px solid var(--smoke); vertical-align: top; font-size: .95rem; }
+.retry thead th { font: 400 .7rem/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--char); border-bottom: 2px solid var(--soot); }
+.retry td:first-child { font: 400 .82rem/1.5 var(--mono); white-space: nowrap; }
+.yes { color: var(--ember); }
+.no { color: var(--char); }
+.retry caption { caption-side: bottom; text-align: left; padding-top: 14px; font-size: .9rem; color: var(--char); }
+
+/* code */
+.code { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 22px; }
+.term { margin: 0; display: grid; min-width: 0; }
+.term .top { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 16px; background: var(--soot); color: var(--ash); border-radius: 14px 14px 0 0; font: 400 .7rem/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.term button { appearance: none; cursor: pointer; border: 1px solid currentColor; background: transparent; color: inherit; border-radius: 999px; padding: 5px 10px; font: 400 .66rem/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.term button:hover { color: var(--flame); }
+.term pre { margin: 0; padding: 18px; background: var(--code-bg); border: 2px solid var(--soot); border-top: 0; border-radius: 0 0 14px 14px; font: 400 .78rem/1.75 var(--mono); overflow-x: auto; }
+.term pre i { color: var(--char); font-style: normal; }
+.term pre b { color: var(--ember); font-weight: 400; }
+.contrib { margin-top: 28px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 18px 24px; align-items: start; padding: 24px; border-radius: 18px; background: var(--ash-2); }
+.contrib svg { width: 46px; height: 46px; }
+.contrib h3 { margin-bottom: 6px; }
+.contrib p { color: var(--char); font-size: .98rem; }
+
+/* soar callout */
+.soar { margin-top: 96px; border-radius: 22px; background: var(--band); color: var(--band-fg); padding: 34px; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 24px 48px; align-items: center; }
+.soar h2 { color: var(--band-fg); font-size: clamp(1.9rem, 4vw, 2.6rem); }
+.soar p { color: var(--band-muted); }
+.soar .kicker { color: var(--band-muted); }
+.soar .nums { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.soar .nums div { display: grid; gap: 4px; }
+.soar .nums b { font: 400 2.4rem/1 var(--display); color: var(--flame); font-variant-numeric: tabular-nums; }
+.soar .nums span { font: 400 .7rem/1.45 var(--mono); color: var(--band-muted); }
+.soar .btn { border-color: var(--band-fg); color: var(--band-fg); }
+.soar .btn:hover { border-color: var(--flame); color: var(--flame); }
+
+footer { margin-top: 96px; border-top: 2px solid var(--soot); padding-block: 40px 48px; }
+footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 18px; font: 400 .74rem/1.6 var(--mono); color: var(--char); }
+
+@keyframes rise { from { transform: translateY(12px); opacity: .001; } to { transform: none; opacity: 1; } }
+.hero > * { animation: rise .7s cubic-bezier(.2,.7,.2,1) both; }
+.hero > *:nth-child(2) { animation-delay: .1s; }
+.hero > *:nth-child(3) { animation-delay: .2s; }
+@media (prefers-reduced-motion: reduce) { .hero > * { animation: none; } }
+
+@media (max-width: 960px) {
+  .fuel { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stick, .stick.wide { grid-column: span 1; }
+  .stick.yours { grid-column: span 2; }
+  .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .step:nth-child(3) { padding-left: 0; border-left: 0; }
+  .step:nth-child(n+3) { border-top: 1px solid var(--smoke); }
+  .problem, .code, .soar, .hero .sub { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 620px) {
+  body { font-size: 17px; }
+  .nav { display: none; }
+  .fuel { grid-template-columns: minmax(0, 1fr); }
+  .stick.yours { grid-column: span 1; }
+  .steps { grid-template-columns: minmax(0, 1fr); }
+  .step, .step + .step { padding-left: 0; border-left: 0; }
+  .step + .step { border-top: 1px solid var(--smoke); }
+  .soar { padding: 24px; }
+  .contrib { grid-template-columns: minmax(0, 1fr); }
+}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="bar">
+    <a class="mark" href="#top" aria-label="Kindling home">
+      <svg viewBox="0 0 28 28" aria-hidden="true"><path d="M4 24 L14 17 L24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M6 20 L22 20" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M14 3 C18 8 19 11 17 14 C16 16 12 16 11 14 C10 12 11 10 12.5 9 C12.5 11 14 11.5 14.5 10.5 C15.5 8.5 14.5 6 14 3 Z" fill="var(--ember)"/></svg>
+      Kindling
+    </a>
+    <nav class="nav" aria-label="Sections">
+      <a href="#why">Why</a>
+      <a href="#fuel">Transports</a>
+      <a href="#race">The race</a>
+      <a href="#code">Code</a>
+      <a href="https://soar.lantern.io">Soar</a>
+      <a href="https://github.com/getlantern/kindling">GitHub</a>
+    </nav>
+  </header>
+
+  <div class="hero" id="top">
+    <p class="byline">From the <a href="https://lantern.io">Lantern</a> team · Go · Apache 2.0</p>
+    <h1>Kind<span class="ember-text">ling</span></h1>
+    <div class="sub">
+      <p class="big">Get the first bytes through a censored network.</p>
+      <div>
+        <p class="lede">Kindling is a Go library that fetches small things, like config files, through firewalls that block everything you'd normally try. It races several circumvention techniques at once and hands your request to whichever connects first. You get back an ordinary <code>http.Client</code>.</p>
+        <div class="cta">
+          <a class="btn hot" href="#code">Start in Go</a>
+          <a class="btn" href="https://github.com/getlantern/kindling">Source on GitHub</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="race" aria-label="Animated race between kindling's transports">
+  <div class="wrap">
+    <div class="race-head">
+      <h2>One request, <span>every route at once</span></h2>
+      <div class="scenes" role="group" aria-label="Network">
+        <button type="button" class="scene" data-s="0" aria-pressed="true">Light filtering</button>
+        <button type="button" class="scene" data-s="1" aria-pressed="false">SNI + DNS blocking</button>
+        <button type="button" class="scene" data-s="2" aria-pressed="false">Everything blocked</button>
+      </div>
+    </div>
+    <canvas id="lanes"></canvas>
+    <p class="race-note" id="race-note">Illustrative timings.</p>
+  </div>
+</div>
+
+<div class="wrap">
+  <section id="why" aria-labelledby="why-h">
+    <div class="problem">
+      <div>
+        <div class="head"><span class="kicker"><b>●</b> The bootstrap problem</span><h2 id="why-h">Before a VPN can connect, it has to phone home</h2></div>
+        <p>Every circumvention app starts the same way: it needs a config file, a list of servers, or a login check before it can do anything else. On a censored network that first request is the easiest one to block, because it goes to a known address before any tunnel is up.</p>
+        <p>Kindling exists for that one request. It isn't a VPN and doesn't carry your traffic. It gets a few kilobytes in and out reliably, so the app that uses it can get going.</p>
+      </div>
+      <ol class="boot" aria-label="App start-up">
+        <li><b>App opens</b>No servers known yet, nothing cached on a fresh install.</li>
+        <li class="hot"><b>Fetch config · kindling</b>Raced over every technique that might work on this network.</li>
+        <li><b>Pick a proxy</b>Now the app knows where its servers are.</li>
+        <li><b>Tunnel up</b>Normal traffic flows through the app's own protocols.</li>
+      </ol>
+    </div>
+  </section>
+
+  <section id="fuel" aria-labelledby="fuel-h">
+    <div class="head">
+      <span class="kicker"><b>●</b> Transports</span>
+      <h2 id="fuel-h">Four ways through, and room for yours</h2>
+      <p class="lede">Each technique beats a different kind of blocking. None works everywhere, which is why kindling runs them together.</p>
+    </div>
+    <div class="fuel">
+      <article class="stick">
+        <div class="top"><span class="name">domainfront</span><span class="tier">Tier 1</span></div>
+        <h3>Domain fronting</h3>
+        <p>Connects to a large CDN under an innocuous server name, then asks for the real origin inside the encrypted request. Blocking it means blocking the CDN. Kindling only counts a front as connected after a real TLS handshake, so a dead front can't win the race.</p>
+        <div class="limits"><span>streaming ok</span><span>config refreshed remotely</span></div>
+      </article>
+      <article class="stick">
+        <div class="top"><span class="name">smart</span><span class="tier">Tier 1</span></div>
+        <h3>Proxyless dialing</h3>
+        <p>The <a href="https://github.com/Jigsaw-Code/outline-sdk/tree/main/x/smart">Outline SDK</a> smart dialer connects straight to the destination and searches for a trick that gets past DNS and SNI blocking:</p>
+        <ul>
+          <li>DNS over HTTPS through a dozen resolvers</li>
+          <li>TCP stream splitting and out-of-order segments</li>
+          <li>TLS record fragmentation</li>
+        </ul>
+      </article>
+      <article class="stick">
+        <div class="top"><span class="name">amp</span><span class="tier">Tier 1</span></div>
+        <h3>AMP cache</h3>
+        <p>Rides Google's AMP cache, a technique introduced by David Fifield, with Lantern's <a href="https://github.com/getlantern/amp">implementation</a>. Censors that need Google can't block it cleanly. Request bodies are capped, so kindling routes only small requests here.</p>
+        <div class="limits"><span>bodies ≤ 6,000 bytes</span><span>no streaming</span></div>
+      </article>
+      <article class="stick wide last">
+        <div class="top"><span class="name">soar</span><span class="tier">Last resort</span></div>
+        <h3>Soar DNS tunnel</h3>
+        <p><a href="https://soar.lantern.io">Soar</a> carries the request inside DNS queries through whatever resolvers the network allows, including in Russia, where UDP is intercepted, and in China, where forged answers are injected. It's slower than the others, so kindling dials it only after every tier 1 transport has failed.</p>
+        <div class="limits"><span>works when only DNS does</span><span>connects in under 1 s</span></div>
+      </article>
+      <article class="stick wide yours">
+        <div class="top"><span class="name">WithTransport(…)</span><span class="tier">Tier 1 by default</span></div>
+        <h3>Your transport</h3>
+        <p>Anything that can return an <code>http.RoundTripper</code> can join the race. Implement <code>Priority() int</code> to race in a later tier, and <code>MaxLength()</code> if bodies are capped. Kindling handles the racing, retries and timeouts.</p>
+      </article>
+    </div>
+  </section>
+
+  <section id="race" aria-labelledby="race-h">
+    <div class="head">
+      <span class="kicker"><b>●</b> How the race works</span>
+      <h2 id="race-h">Race the connections, send the request once</h2>
+    </div>
+    <div class="steps">
+      <div class="step"><h3>Filter</h3><p>Transports that can't carry this request are skipped: a body over a transport's size cap, or a streaming request on a transport that can't stream.</p></div>
+      <div class="step"><h3>Race a tier</h3><p>Every transport in the first tier starts connecting at once. Transports pre-connect, so the race measures real reachability on this network.</p></div>
+      <div class="step"><h3>Send once</h3><p>The first transport to connect gets the request. Requests are sent one at a time, never in parallel, so a POST can't hit the server twice.</p></div>
+      <div class="step"><h3>Fall back</h3><p>If the whole tier fails, the next tier starts. That's how Soar stays out of the way on networks where faster routes work.</p></div>
+    </div>
+    <div class="retry">
+      <table>
+        <thead><tr><th>Request</th><th>Connection fails</th><th>Transport error, 5xx or 403</th><th>Other 4xx</th></tr></thead>
+        <tbody>
+          <tr><td>GET, HEAD</td><td class="yes">next transport</td><td class="yes">next transport</td><td class="no">returned as-is</td></tr>
+          <tr><td>POST, PUT, DELETE…</td><td class="yes">next transport</td><td class="no">returned as-is</td><td class="no">returned as-is</td></tr>
+          <tr><td>with X-Kindling-Idempotent</td><td class="yes">next transport</td><td class="yes">next transport</td><td class="no">returned as-is</td></tr>
+        </tbody>
+        <caption>A connection that never came up carried no body, so it's always safe to try the next one. Once a body has crossed the wire, kindling replays it only when the method is safe or you set <code>X-Kindling-Idempotent</code>. A 403 counts as a failure because CDN fronts often send one when they refuse a country on one path only.</caption>
+      </table>
+    </div>
+  </section>
+
+  <section id="code" aria-labelledby="code-h">
+    <div class="head">
+      <span class="kicker"><b>●</b> Code</span>
+      <h2 id="code-h">An http.Client that finds its own way out</h2>
+      <p class="lede"><code>go get github.com/getlantern/kindling</code>, pick your transports, and use the client like any other.</p>
+    </div>
+    <div class="code">
+      <figure class="term">
+        <div class="top"><span>Using kindling</span><button type="button" data-copy="use">Copy</button></div>
+<pre id="use">k, err := kindling.<b>NewKindling</b>("myapp",
+	kindling.WithDomainFronting(df),
+	kindling.WithProxyless("raw.githubusercontent.com"),
+	kindling.WithAMPCache(ampClient),
+	kindling.WithDNSTunnel(soarClient), <i>// last resort</i>
+)
+if err != nil {
+	return err
+}
+
+client := k.<b>NewHTTPClient</b>()
+resp, err := client.Get(configURL)</pre>
+      </figure>
+      <figure class="term">
+        <div class="top"><span>Bring your own</span><button type="button" data-copy="own">Copy</button></div>
+<pre id="own">type Transport interface {
+	<i>// Return a pre-connected RoundTripper.</i>
+	NewRoundTripper(ctx context.Context,
+		addr string) (http.RoundTripper, error)
+	<i>// Max request body, or 0 for no limit.</i>
+	MaxLength() int
+	Name() string
+}
+
+kindling.<b>WithTransport</b>(myTransport)</pre>
+      </figure>
+    </div>
+    <div class="contrib">
+      <svg viewBox="0 0 46 46" aria-hidden="true"><path d="M8 40 L23 30 L38 40" fill="none" stroke="var(--soot)" stroke-width="3" stroke-linecap="round"/><path d="M11 35 L35 35" stroke="var(--soot)" stroke-width="3" stroke-linecap="round"/><path d="M23 6 C29 13 31 18 28 23 C26 26 20 26 18 23 C17 20 18 17 20 15 C20 18 22 19 23 17 C25 14 24 10 23 6 Z" fill="var(--ember)"/><circle cx="34" cy="10" r="2" fill="var(--flame)"/><circle cx="12" cy="14" r="1.5" fill="var(--flame)"/></svg>
+      <div>
+        <h3>Add fuel to the fire</h3>
+        <p>Got a technique that gets through somewhere? Wrap it as a Transport and open a pull request. Note any server-side pieces it needs, and every tool built on kindling gets the new route.</p>
+      </div>
+    </div>
+  </section>
+
+  <aside class="soar" aria-labelledby="soar-h">
+    <div style="display:grid;gap:14px">
+      <span class="kicker">The last resort</span>
+      <h2 id="soar-h">When only DNS gets out, Soar does</h2>
+      <p>Soar is the DNS tunnel the Lantern team built for kindling's last tier. It uses every resolver at once, ignores forged answers and falls back to TCP when UDP is blocked.</p>
+      <div class="cta"><a class="btn" href="https://soar.lantern.io">Read about Soar</a></div>
+    </div>
+    <div class="nums">
+      <div><b>187</b><span>KB/s in a Russia-like network where other DNS tunnels can't connect</span></div>
+      <div><b>0.2–0.9 s</b><span>to connect across nine emulated networks</span></div>
+    </div>
+  </aside>
+</div>
+
+<footer>
+  <div class="wrap">
+    <span>Kindling · github.com/getlantern/kindling · Apache 2.0</span>
+    <span><a href="https://soar.lantern.io">Soar</a> · <a href="https://lantern.io">Lantern</a></span>
+    <span>A <a href="https://lantern.io">Lantern</a> project</span>
+  </div>
+</footer>
+
+<script>
+(() => {
+  document.querySelectorAll("[data-copy]").forEach(b => b.addEventListener("click", () => {
+    const pre = document.getElementById(b.dataset.copy);
+    const reset = t => { b.textContent = t; setTimeout(() => b.textContent = "Copy", 1600); };
+    const select = () => { const r = document.createRange(); r.selectNodeContents(pre); const s = getSelection(); s.removeAllRanges(); s.addRange(r); reset("Selected"); };
+    try { navigator.clipboard.writeText(pre.innerText).then(() => reset("Copied"), select); } catch (e) { select(); }
+  }));
+})();
+
+(() => {
+  // Race lanes. Each scene lists, per transport: when it resolves (s) and whether it connects.
+  const LANES = [
+    { name: "Domain fronting", tag: "domainfront", tier: 1 },
+    { name: "Proxyless", tag: "smart", tier: 1 },
+    { name: "AMP cache", tag: "amp", tier: 1 },
+    { name: "Soar DNS tunnel", tag: "soar", tier: 2 },
+  ];
+  const SCENES = [
+    { note: "Light filtering: proxyless dialing finds a working trick first, so it carries the request.",
+      r: [[1.15, true], [0.7, true], [1.5, true], [0, false]] },
+    { note: "SNI and DNS blocking: the direct route is blocked, so domain fronting wins.",
+      r: [[1.2, true], [1.6, false], [1.9, false], [0, false]] },
+    { note: "Everything blocked: tier 1 fails, so kindling dials Soar, which gets through over DNS.",
+      r: [[1.5, false], [1.3, false], [1.1, false], [0.9, true]] },
+  ];
+  const cv = document.getElementById("lanes"), ctx = cv.getContext("2d");
+  const note = document.getElementById("race-note"), btns = [...document.querySelectorAll(".scene")];
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)");
+  let W = 0, H = 0, col = {}, scene = 0, t0 = 0, raf = 0, sparks = [], auto = true, plan = null;
+
+  function colors() {
+    const cs = getComputedStyle(document.documentElement);
+    for (const k of ["band-fg", "band-muted", "band-line", "ember", "flame"]) col[k] = cs.getPropertyValue("--" + k).trim();
+    col.ash = col["band-fg"]; col.smoke = col["band-muted"]; col.char = col["band-line"];
+  }
+  function size() {
+    const r = cv.getBoundingClientRect(), d = Math.min(devicePixelRatio || 1, 2);
+    W = r.width; H = r.height; cv.width = W * d; cv.height = H * d; ctx.setTransform(d, 0, 0, d, 0, 0);
+  }
+  // Turn a scene into per-lane timelines: start, end, outcome; the winner is tier 1's earliest
+  // success, else the last-resort lane, which starts only when all of tier 1 has failed.
+  function build(s) {
+    const r = SCENES[s].r, t1 = r.slice(0, 3);
+    const okIdx = t1.map((x, i) => x[1] ? i : -1).filter(i => i >= 0);
+    let win = -1, winAt = Infinity;
+    okIdx.forEach(i => { if (t1[i][0] < winAt) { winAt = t1[i][0]; win = i; } });
+    const lanes = r.map(([d, ok], i) => ({ start: 0, end: d, ok, state: "idle" }));
+    if (win < 0) {
+      const tierDone = Math.max(...t1.map(x => x[0]));
+      lanes[3].start = tierDone + 0.25; lanes[3].end = lanes[3].start + r[3][0]; win = 3; winAt = lanes[3].end;
+    } else {
+      lanes.forEach((l, i) => { if (i < 3 && i !== win && l.end > winAt) { l.cancel = winAt; } });
+      lanes[3].skip = true;
+    }
+    return { lanes, win, winAt, total: winAt + 1.1 };
+  }
+  const geo = () => {
+    const left = Math.min(200, Math.max(120, W * .2)), right = W - Math.max(70, W * .1);
+    const top = 30, gap = (H - 64) / 4;
+    return { left, right, y: i => top + gap * (i + .5) + (i === 3 ? 14 : 0), gap };
+  };
+  function draw(t) {
+    const g = geo();
+    ctx.clearRect(0, 0, W, H);
+    // tier divider
+    const dy = (g.y(2) + g.y(3)) / 2;
+    ctx.strokeStyle = col.char; ctx.setLineDash([4, 6]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(12, dy); ctx.lineTo(W - 12, dy); ctx.stroke(); ctx.setLineDash([]);
+    ctx.font = '400 10px "Fragment Mono", ui-monospace, monospace'; ctx.fillStyle = col.smoke; ctx.textBaseline = "middle"; ctx.textAlign = "right";
+    ctx.fillText("LAST RESORT · ONLY IF TIER 1 FAILS", W - 14, dy - 10);
+    ctx.textAlign = "left"; ctx.fillText("TIER 1 · RACED IN PARALLEL", 14, 14);
+    // origin
+    ctx.fillStyle = col.smoke; ctx.textAlign = "center";
+    ctx.fillText("ORIGIN", g.right + (W - g.right) / 2, 14);
+    LANES.forEach((L, i) => {
+      const y = g.y(i), l = plan.lanes[i];
+      ctx.font = '400 15px "Tilt Warp", sans-serif'; ctx.textAlign = "left"; ctx.fillStyle = col.ash;
+      ctx.fillText(L.name, 14, y - 7);
+      ctx.font = '400 10px "Fragment Mono", ui-monospace, monospace'; ctx.fillStyle = col.smoke;
+      ctx.fillText(L.tag, 14, y + 11);
+      // track
+      ctx.strokeStyle = col.char; ctx.globalAlpha = .45; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(g.left, y); ctx.lineTo(g.right, y); ctx.stroke(); ctx.globalAlpha = 1;
+      if (l.skip) { ctx.fillStyle = col.smoke; ctx.font = '400 10px "Fragment Mono", ui-monospace, monospace'; ctx.fillText(t > plan.winAt ? "not needed" : "waiting", g.left + 10, y - 10); return; }
+      if (t < l.start) { ctx.fillStyle = col.smoke; ctx.font = '400 10px "Fragment Mono", ui-monospace, monospace'; ctx.fillText("waiting", g.left + 10, y - 10); return; }
+      const stopAt = l.cancel ?? l.end;
+      const local = Math.min(t, stopAt) - l.start, dur = l.end - l.start;
+      // failing lanes die partway; connecting lanes reach the origin
+      const reach = l.ok ? 1 : .35 + .4 * ((i * 37) % 10) / 10;
+      const frac = Math.min(1, local / dur) * reach;
+      const x = g.left + (g.right - g.left) * frac;
+      const done = t >= stopAt;
+      const isWin = plan.win === i;
+      // burnt trail
+      const grad = ctx.createLinearGradient(g.left, 0, x, 0);
+      grad.addColorStop(0, col.char); grad.addColorStop(1, isWin || !done ? col.ember : col.char);
+      ctx.strokeStyle = grad; ctx.lineWidth = isWin && done ? 4 : 3; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(g.left, y); ctx.lineTo(x, y); ctx.stroke();
+      if (!done) {
+        // live spark
+        const r = 5 + Math.sin(t * 30 + i) * 1.2;
+        const glow = ctx.createRadialGradient(x, y, 0, x, y, r * 3.2);
+        glow.addColorStop(0, col.flame); glow.addColorStop(.4, col.ember); glow.addColorStop(1, "transparent");
+        ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(x, y, r * 3.2, 0, 7); ctx.fill();
+        if (Math.random() < .5) sparks.push({ x, y, vx: -20 - Math.random() * 40, vy: (Math.random() - .5) * 50, life: .5, hot: true });
+      } else if (isWin) {
+        if (Math.random() < .9) sparks.push({ x: g.right + (Math.random() - .5) * 10, y, vx: (Math.random() - .5) * 30, vy: -40 - Math.random() * 70, life: .9 + Math.random() * .5, hot: true });
+        ctx.fillStyle = col.flame; ctx.beginPath(); ctx.arc(g.right, y, 7, 0, 7); ctx.fill();
+        ctx.font = '400 11px "Fragment Mono", ui-monospace, monospace'; ctx.fillStyle = col.flame; ctx.textAlign = "right";
+        ctx.fillText(`connected ${l.end.toFixed(1)} s · request sent`, g.right - 14, y - 13);
+      } else {
+        // fizzled or cancelled: smoke
+        if (Math.random() < .25 && t - stopAt < 1.2) sparks.push({ x, y, vx: (Math.random() - .5) * 12, vy: -15 - Math.random() * 20, life: 1.1, hot: false });
+        ctx.strokeStyle = col.char; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(x - 5, y - 5); ctx.lineTo(x + 5, y + 5); ctx.moveTo(x + 5, y - 5); ctx.lineTo(x - 5, y + 5); ctx.stroke();
+        ctx.font = '400 10px "Fragment Mono", ui-monospace, monospace'; ctx.fillStyle = col.smoke; ctx.textAlign = "left";
+        ctx.fillText(l.cancel != null ? "cancelled, another won" : "blocked", x + 12, y - 10);
+      }
+    });
+  }
+  function drawSparks(dt) {
+    for (const s of sparks) {
+      s.life -= dt; s.x += s.vx * dt; s.y += s.vy * dt;
+      ctx.globalAlpha = Math.max(0, Math.min(1, s.life));
+      ctx.fillStyle = s.hot ? (s.life > .5 ? col.flame : col.ember) : col.char;
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.hot ? 1.8 : 3, 0, 7); ctx.fill();
+    }
+    ctx.globalAlpha = 1; sparks = sparks.filter(s => s.life > 0);
+  }
+  function setScene(s, user) {
+    scene = s; plan = build(s); t0 = performance.now(); sparks = [];
+    if (user) auto = false;
+    btns.forEach((b, i) => b.setAttribute("aria-pressed", i === s));
+    note.textContent = SCENES[s].note + " Timings are illustrative.";
+    if (reduce.matches) { draw(plan.total); }
+  }
+  let last = 0;
+  function frame(now) {
+    raf = requestAnimationFrame(frame);
+    const dt = Math.min(.05, (now - last) / 1000 || 0); last = now;
+    const t = (now - t0) / 1000 / 1.0;
+    draw(Math.min(t, plan.total)); drawSparks(dt);
+    if (t > plan.total + 1.4) { if (auto) setScene((scene + 1) % SCENES.length); else setScene(scene); }
+  }
+  function run() {
+    cancelAnimationFrame(raf); colors(); size();
+    if (!plan) setScene(0);
+    if (reduce.matches) { draw(plan.total); return; }
+    raf = requestAnimationFrame(n => { last = n; frame(n); });
+  }
+  btns.forEach(b => b.addEventListener("click", () => { setScene(+b.dataset.s, true); if (reduce.matches) draw(plan.total); }));
+  addEventListener("resize", () => { size(); if (reduce.matches) draw(plan.total); });
+  const restyle = () => { colors(); if (reduce.matches) draw(plan.total); };
+  matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", restyle);
+  new MutationObserver(restyle).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  reduce.addEventListener?.("change", run);
+  document.addEventListener("visibilitychange", () => { if (document.hidden) cancelAnimationFrame(raf); else run(); });
+  // first frame: draw the finished race so the page reads at rest
+  colors(); size(); setScene(0); draw(plan.total);
+  (document.fonts?.ready || Promise.resolve()).then(run);
+})();
+</script>
+</body>
+</html>
