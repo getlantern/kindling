@@ -242,7 +242,7 @@ func TestNewKindling(t *testing.T) {
 	})
 }
 
-// stubDNSTT implements dnstt.DNSTT plus the optional RequestTimeout()
+// stubDNSTT implements DNSTunnel plus the optional RequestTimeout()
 // and MaxLength() methods that WithDNSTunnel type-asserts.
 type stubDNSTT struct {
 	reqTimeout time.Duration
