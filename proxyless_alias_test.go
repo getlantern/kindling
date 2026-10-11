@@ -102,7 +102,11 @@ func checkAliases(t *testing.T, client *http.Client, dialer *recordingDialer) {
 }
 
 func TestWithProxylessAliases_EmptyHost(t *testing.T) {
-	for _, m := range []map[string]string{{"": "alias.example"}, {"origin.example": ""}} {
+	for _, m := range []map[string]string{
+		{"": "alias.example"},
+		{"origin.example": ""},
+		{"Origin.Example": "a.example", "origin.example": "b.example"},
+	} {
 		if _, err := NewKindling("test", WithProxylessAliases(m), WithProxyless("alias.example")); err == nil {
 			t.Errorf("WithProxylessAliases(%v): want error", m)
 		}

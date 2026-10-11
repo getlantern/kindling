@@ -398,7 +398,11 @@ func WithProxylessAliases(aliases map[string]string) Option {
 			if from == "" || to == "" {
 				return fmt.Errorf("proxyless alias %q -> %q: empty host", from, to)
 			}
-			m[strings.ToLower(from)] = to
+			key := strings.ToLower(from)
+			if _, dup := m[key]; dup {
+				return fmt.Errorf("proxyless alias %q: host listed more than once", from)
+			}
+			m[key] = to
 		}
 		k.proxylessAliases = m
 		return nil
