@@ -144,7 +144,7 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			// Across tiers for the same reason as within one. A budget that
 			// expires mid-race returns heldErr alone, so assigning here meant a
 			// timeout was reported as a single strategy's failure while every
-			// other tier's reason — fronted, dnstt, direct — was discarded. That
+			// other tier's reason — fronted, soar, direct — was discarded. That
 			// is what made a smart-dial DNS timeout look like the cause of a
 			// lookup that in fact had several independent failures.
 			//

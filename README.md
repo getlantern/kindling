@@ -5,7 +5,7 @@ The techniques integrated include:
 
 1) [Domain fronting](https://en.wikipedia.org/wiki/Domain_fronting).
 2) [Proxyless dialing from the Outline SDK](https://github.com/Jigsaw-Code/outline-sdk/tree/main/x/smart) that generally bypasses DNS-based and SNI-based blocking (i.e. works particularly well for broadly used services with a lot of IPs that are not IP-blocked)
-3) DNS tunneling via [DNSTT](https://www.bamsoftware.com/software/dnstt/)
+3) DNS tunneling via [Soar](https://github.com/getlantern/soar)
 4) AMP caching also via David Fifield with a [Lantern implementation](https://github.com/getlantern/amp).
 
 The idea is to continually add more techniques as they become available such that all tools have access to the most robust library possible for getting on the network quickly and reliably.
@@ -71,15 +71,26 @@ httpClient := k.NewHTTPClient()
 All you really need to do is to return an `http.RoundTripper` from whatever library you're adding. Then you simply need to add a method in `kindling.go` to allow callers to configure the new method. For DNS tunneling, for example, that method is as follows:
 
 ```
-func WithDNSTunnel(d dnstt.DNSTT) Option {
-	return newOption(func(k *kindling) {
-		log.Info("Setting DNS tunnel")
+func WithDNSTunnel(d DNSTunnel) Option {
+	return func(k *kindling) error {
 		if d == nil {
-			log.Error("DNSTT instance is nil")
-			return
+			return fmt.Errorf("dns tunnel is nil")
 		}
-		k.roundTripperGenerators = append(k.roundTripperGenerators, namedDialer("dnstt", d.NewRoundTripper))
-	})
+		nt := &namedTransport{
+			name:         string(TransportDNSTunnel),
+			isStreamable: true,
+			newRT:        d.NewRoundTripper,
+			priority:     priorityLastResort,
+		}
+		if tt, ok := d.(interface{ RequestTimeout() time.Duration }); ok {
+			nt.reqTimeout = tt.RequestTimeout()
+		}
+		if tt, ok := d.(interface{ MaxLength() int }); ok {
+			nt.maxLength = tt.MaxLength()
+		}
+		k.transports = append(k.transports, nt)
+		return nil
+	}
 }
 ```
 

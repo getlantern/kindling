@@ -16,7 +16,6 @@ import (
 	"github.com/Jigsaw-Code/outline-sdk/transport"
 	"github.com/Jigsaw-Code/outline-sdk/x/smart"
 	"github.com/getlantern/amp"
-	"github.com/getlantern/dnstt"
 	"github.com/getlantern/domainfront"
 )
 
@@ -28,7 +27,7 @@ type TransportName string
 
 const (
 	TransportDomainfront TransportName = "domainfront"
-	TransportDNSTunnel   TransportName = "dnstt"
+	TransportDNSTunnel   TransportName = "soar"
 	TransportAMP         TransportName = "amp"
 	TransportSmart       TransportName = "smart"
 )
@@ -289,14 +288,25 @@ func WithDomainFronting(c *domainfront.Client) Option {
 	}
 }
 
-// WithDNSTunnel adds DNS tunneling via the provided dnstt.DNSTT. DNS tunneling
+// DNSTunnel is a DNS-tunnel transport such as Soar. It's declared here, not
+// imported from a tunnel's own package, so kindling doesn't link any one
+// implementation into every client.
+type DNSTunnel interface {
+	// NewRoundTripper connects to addr through the tunnel and returns a
+	// round tripper for requests to it.
+	NewRoundTripper(ctx context.Context, addr string) (http.RoundTripper, error)
+	// Close releases the tunnel's sessions.
+	Close() error
+}
+
+// WithDNSTunnel adds DNS tunneling via the provided DNSTunnel. DNS tunneling
 // is raced only as a last resort: it keeps working under heavy censorship but
 // is slow and low-throughput, so the race transport reaches for it only after
 // every faster transport has failed to produce a usable response.
-func WithDNSTunnel(d dnstt.DNSTT) Option {
+func WithDNSTunnel(d DNSTunnel) Option {
 	return func(k *kindling) error {
 		if d == nil {
-			return fmt.Errorf("dnstt instance is nil")
+			return fmt.Errorf("dns tunnel is nil")
 		}
 		nt := &namedTransport{
 			name:         string(TransportDNSTunnel),
