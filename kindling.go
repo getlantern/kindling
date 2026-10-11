@@ -73,7 +73,8 @@ type Transport interface {
 	// (e.g. text/event-stream).
 	IsStreamable() bool
 
-	// Name identifies this transport for logging and debugging.
+	// Name identifies this transport in logs and race reports. It must not be
+	// empty: WithTransport rejects a transport without one.
 	Name() string
 
 	// RequestTimeout returns the maximum time a single request is allowed to
@@ -106,6 +107,8 @@ type kindling struct {
 	// proxylessAliases maps a request host to the host the proxyless
 	// transport connects to instead. Set via WithProxylessAliases.
 	proxylessAliases map[string]string
+	// raceObserver, if set, hears how each request's race went.
+	raceObserver func(context.Context, Race)
 	// deferred holds option work that must run after every other option
 	// has had a chance to mutate the struct. Used by WithProxyless so it
 	// reads streamDialer/packetDialer after WithStreamDialer /
@@ -162,7 +165,7 @@ func (k *kindling) NewHTTPClient() *http.Client {
 	k.mu.Unlock()
 
 	return &http.Client{
-		Transport: newRaceTransport(k.appName, k.log, k.panicListener, snapshot),
+		Transport: k.newRaceTransport(snapshot),
 	}
 }
 
@@ -268,6 +271,9 @@ func WithTransport(t Transport) Option {
 	return func(k *kindling) error {
 		if t == nil {
 			return fmt.Errorf("transport is nil")
+		}
+		if t.Name() == "" {
+			return fmt.Errorf("transport has no name")
 		}
 		k.transports = append(k.transports, t)
 		return nil
@@ -563,4 +569,10 @@ func NewSmartHTTPTransportWithConfig(
 		TLSHandshakeTimeout:   20 * time.Second,
 		ExpectContinueTimeout: 4 * time.Second,
 	}, nil
+}
+
+func (k *kindling) newRaceTransport(transports []Transport) *raceTransport {
+	rt := newRaceTransport(k.appName, k.log, k.panicListener, transports)
+	rt.observer = k.raceObserver
+	return rt
 }

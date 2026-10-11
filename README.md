@@ -32,6 +32,31 @@ kindling.WithProxylessAliases(map[string]string{"df.iantem.io": "df.getiantem.or
 List the alias, not the original, in `WithProxyless`, so the strategy search runs against the host
 proxyless actually connects to.
 
+## Observing races
+
+`WithRaceObserver` reports, after every request, which transport's response was returned and what
+happened to each transport tried: connect failure, request error, a 5xx or 403 that sent kindling to
+the next transport, or no outcome before the request ended (still connecting, connected but never
+chosen to send, or cut off by the time budget). Callers can attach it to their own
+tracing, for example as span events.
+
+```go
+k, err := kindling.NewKindling("myapp",
+	kindling.WithProxyless("example.com"),
+	kindling.WithRaceObserver(func(ctx context.Context, race kindling.Race) {
+		span := trace.SpanFromContext(ctx)
+		span.SetAttributes(attribute.String("kindling.winner", race.Winner))
+		for _, a := range race.Attempts {
+			span.AddEvent("kindling.attempt", trace.WithAttributes(
+				attribute.String("transport", a.Transport),
+				attribute.String("outcome", string(a.Outcome)),
+				attribute.Int("status", a.StatusCode),
+			))
+		}
+	}),
+)
+```
+
 ## Example
 
 ```go
@@ -67,7 +92,8 @@ type Transport interface {
 	// IsStreamable reports whether this transport supports streaming responses (text/event-stream).
 	IsStreamable() bool
 
-	// Name identifies this transport for logging and debugging.
+	// Name identifies this transport in logs and race reports. It must not be
+	// empty: WithTransport rejects a transport without one.
 	Name() string
 
 	// RequestTimeout returns the maximum time a single request may spend on this transport.
