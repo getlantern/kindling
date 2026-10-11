@@ -2,6 +2,8 @@ package kindling
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -104,5 +106,88 @@ func TestWithProxylessAliases_EmptyHost(t *testing.T) {
 		if _, err := NewKindling("test", WithProxylessAliases(m), WithProxyless("alias.example")); err == nil {
 			t.Errorf("WithProxylessAliases(%v): want error", m)
 		}
+	}
+}
+
+// The alias must also be the TLS server name, or the blocked origin still shows
+// up in the ClientHello. The client doesn't trust the test cert, so the request
+// fails after the handshake starts; the server records the SNI either way.
+func TestWithProxylessAliases_TLSServerName(t *testing.T) {
+	sni := make(chan string, 1)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.TLS = &tls.Config{GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		select {
+		case sni <- hello.ServerName:
+		default:
+		}
+		return nil, nil
+	}}
+	srv.StartTLS()
+	defer srv.Close()
+
+	dialer := &recordingDialer{srv: srv.Listener.Addr().String()}
+	stubSearch(t, func(string) (transport.StreamDialer, error) { return dialer, nil })
+	k, err := NewKindling("test",
+		WithProxyless("alias.example"),
+		WithProxylessAliases(map[string]string{"origin.example": "alias.example"}),
+	)
+	if err != nil {
+		t.Fatalf("NewKindling() error = %v", err)
+	}
+	if resp, err := k.NewHTTPClient().Get("https://origin.example/v1/config"); err == nil {
+		resp.Body.Close()
+	}
+	select {
+	case got := <-sni:
+		if got != "alias.example" {
+			t.Errorf("TLS server name = %q, want alias.example", got)
+		}
+	default:
+		t.Fatal("server saw no TLS handshake")
+	}
+}
+
+func TestHostRewriter_IPv6AliasWithoutPort(t *testing.T) {
+	var got string
+	rt := &hostRewriter{host: "2001:db8::1", next: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		got = r.URL.Host
+		return nil, io.EOF
+	})}
+	req, _ := http.NewRequest(http.MethodGet, "https://origin.example/v1", nil)
+	rt.RoundTrip(req)
+	if got != "[2001:db8::1]" {
+		t.Errorf("URL.Host = %q, want [2001:db8::1]", got)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// An alias target in different case from WithProxyless must still use its own
+// strategy search, not the first domain's.
+func TestWithProxylessAliases_TargetCaseSelectsSearch(t *testing.T) {
+	var mu sync.Mutex
+	var searched []string
+	stubSearch(t, func(domain string) (transport.StreamDialer, error) {
+		mu.Lock()
+		searched = append(searched, domain)
+		mu.Unlock()
+		return dialedStreamDialer{}, nil
+	})
+	k, err := NewKindling("test",
+		WithProxyless("other.example", "alias.example"),
+		WithProxylessAliases(map[string]string{"origin.example": "ALIAS.EXAMPLE"}),
+	)
+	if err != nil {
+		t.Fatalf("NewKindling() error = %v", err)
+	}
+	if err := dialSmart(t, k, "origin.example:443"); !errors.Is(err, errStubDialed) {
+		t.Fatalf("dial error = %v; want %v", err, errStubDialed)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(searched) != 1 || searched[0] != "alias.example" {
+		t.Errorf("searched = %v; want only [alias.example]", searched)
 	}
 }
