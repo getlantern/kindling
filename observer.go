@@ -18,8 +18,9 @@ const (
 	OutcomeRetryStatus Outcome = "retry_status"
 	// OutcomeWon means its response was the one returned.
 	OutcomeWon Outcome = "won"
-	// OutcomeUnfinished means it hadn't finished connecting, or connected only
-	// after another transport had won.
+	// OutcomeUnfinished means it produced no request outcome before the request
+	// ended: still connecting, connected but never chosen to send, or cut off
+	// by the time budget.
 	OutcomeUnfinished Outcome = "unfinished"
 )
 

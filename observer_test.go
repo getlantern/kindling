@@ -185,3 +185,18 @@ func TestRaceObserver_NilRecordIsInert(t *testing.T) {
 	r.add(0, OutcomeWon, 200, nil)
 	r.won(0)
 }
+
+// The public option reaches requests made through NewHTTPClient.
+func TestWithRaceObserver(t *testing.T) {
+	var got []Race
+	k, err := NewKindling("test",
+		WithTransport(&mockTransport{name: "custom", newRoundTripper: returns(http.StatusOK)}),
+		WithRaceObserver(func(_ context.Context, r Race) { got = append(got, r) }),
+	)
+	require.NoError(t, err)
+	resp, err := k.NewHTTPClient().Get("https://origin.example/v1/config")
+	require.NoError(t, err)
+	resp.Body.Close()
+	require.Len(t, got, 1)
+	assert.Equal(t, "custom", got[0].Winner)
+}

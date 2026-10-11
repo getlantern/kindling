@@ -36,7 +36,8 @@ proxyless actually connects to.
 
 `WithRaceObserver` reports, after every request, which transport's response was returned and what
 happened to each transport tried: connect failure, request error, a 5xx or 403 that sent kindling to
-the next transport, or still connecting when another won. Callers can attach it to their own
+the next transport, or no outcome before the request ended (still connecting, connected but never
+chosen to send, or cut off by the time budget). Callers can attach it to their own
 tracing, for example as span events.
 
 ```go
