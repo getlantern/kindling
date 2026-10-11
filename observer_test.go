@@ -3,6 +3,7 @@ package kindling
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -199,4 +200,18 @@ func TestWithRaceObserver(t *testing.T) {
 	resp.Body.Close()
 	require.Len(t, got, 1)
 	assert.Equal(t, "custom", got[0].Winner)
+}
+
+// An attempt cut off by the request's budget is unfinished, not a failure;
+// any other error is still a connection failure.
+func TestRaceObserver_BudgetCutoffIsUnfinished(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rec := newRaceRecord()
+	rec.racing([]Transport{&mockTransport{name: "cutoff"}, &mockTransport{name: "blocked"}})
+	rec.connectFailed(ctx, 0, fmt.Errorf("dial: %w", ctx.Err()))
+	rec.connectFailed(ctx, 1, errors.New("connection refused"))
+	a := byTransport(rec.finish())
+	assert.Equal(t, OutcomeUnfinished, a["cutoff"].Outcome)
+	assert.Equal(t, OutcomeConnectFailed, a["blocked"].Outcome)
 }

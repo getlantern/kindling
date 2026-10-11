@@ -241,7 +241,7 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 				// was unattributable unless its own text happened to say which
 				// strategy produced it.
 				heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", result.name, result.err))
-				rec.add(result.id, OutcomeConnectFailed, 0, result.err)
+				rec.connectFailed(ctx, result.id, result.err)
 				continue
 			}
 
@@ -264,7 +264,7 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 				} else {
 					rec.add(result.id, OutcomeWon, resp.StatusCode, nil)
 				}
-				drainReady(results, rec)
+				drainReady(ctx, results, rec)
 				return tierResult{resp: resp, id: result.id, err: err, final: true}
 			}
 
@@ -304,7 +304,7 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 			// the server's verdict on the request itself, retry won't help.
 			drainAndClose(heldResp)
 			rec.add(result.id, OutcomeWon, resp.StatusCode, nil)
-			drainReady(results, rec)
+			drainReady(ctx, results, rec)
 			return tierResult{resp: resp, id: result.id, final: true}
 
 		case <-ctx.Done():
@@ -327,7 +327,7 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 				case r := <-results:
 					if r.err != nil {
 						heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", r.name, r.err))
-						rec.add(r.id, OutcomeConnectFailed, 0, r.err)
+						rec.connectFailed(ctx, r.id, r.err)
 					}
 				default:
 					break drain
@@ -353,7 +353,7 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 
 // drainReady records connection failures that already arrived when a tier ends
 // early, so they aren't reported as unfinished. It doesn't wait for the rest.
-func drainReady(results <-chan connectResult, rec *raceRecord) {
+func drainReady(ctx context.Context, results <-chan connectResult, rec *raceRecord) {
 	if rec == nil {
 		return
 	}
@@ -361,7 +361,7 @@ func drainReady(results <-chan connectResult, rec *raceRecord) {
 		select {
 		case r := <-results:
 			if r.err != nil {
-				rec.add(r.id, OutcomeConnectFailed, 0, r.err)
+				rec.connectFailed(ctx, r.id, r.err)
 			}
 		default:
 			return

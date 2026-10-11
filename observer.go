@@ -2,6 +2,7 @@ package kindling
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -90,6 +91,15 @@ func (r *raceRecord) add(id int, o Outcome, status int, err error) {
 	r.race.Attempts = append(r.race.Attempts, Attempt{
 		Transport: r.names[id], Outcome: o, StatusCode: status, Err: err, Elapsed: time.Since(r.start),
 	})
+}
+
+// connectFailed records a connection failure, unless the request's own budget
+// ending caused it: that attempt was cut off, so it stays unfinished.
+func (r *raceRecord) connectFailed(ctx context.Context, id int, err error) {
+	if cause := ctx.Err(); cause != nil && errors.Is(err, cause) {
+		return
+	}
+	r.add(id, OutcomeConnectFailed, 0, err)
 }
 
 // won marks the response from race position id as the one returned, upgrading
