@@ -18,6 +18,20 @@ Kindling races the configured transports against each other and returns the firs
 
 DNS tunneling (`WithDNSTunnel`) is registered as a **last resort**. It keeps working under heavy censorship but is slow and low-throughput, so it is only dialed when the faster transports (domain fronting, proxyless dialing, AMP caching) are all blocked. Custom transports added via `WithTransport` default to the top tier; a transport can opt into a later tier by implementing `Priority() int` (higher numbers race later).
 
+## Proxyless aliases
+
+Some origins refuse clients from certain countries at their own edge, while the same origin behind a
+CDN does not. `WithProxylessAliases` makes the proxyless transport send requests for a host to an
+alias instead, leaving every other transport on the original host:
+
+```go
+kindling.WithProxyless("df.getiantem.org", "api.getiantem.org"),
+kindling.WithProxylessAliases(map[string]string{"df.iantem.io": "df.getiantem.org"}),
+```
+
+List the alias, not the original, in `WithProxyless`, so the strategy search runs against the host
+proxyless actually connects to.
+
 ## Example
 
 ```go

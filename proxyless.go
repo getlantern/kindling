@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -156,4 +157,35 @@ func (s *smartSearch) run(pending *pendingSearch) {
 		close(pending.done)
 	}()
 	pending.dialer, pending.err = s.build()
+}
+
+// aliasAddr returns the alias for addr's host, if any, and the address to dial.
+func aliasAddr(aliases map[string]string, addr string) (string, string) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", addr
+	}
+	alias, ok := aliases[host]
+	if !ok {
+		return "", addr
+	}
+	return alias, net.JoinHostPort(alias, port)
+}
+
+// hostRewriter sends each request to host, which also becomes the TLS server
+// name, leaving the caller's request untouched.
+type hostRewriter struct {
+	host string
+	next http.RoundTripper
+}
+
+func (h *hostRewriter) RoundTrip(req *http.Request) (*http.Response, error) {
+	r := req.Clone(req.Context())
+	if _, port, err := net.SplitHostPort(r.URL.Host); err == nil {
+		r.URL.Host = net.JoinHostPort(h.host, port)
+	} else {
+		r.URL.Host = h.host
+	}
+	r.Host = ""
+	return h.next.RoundTrip(r)
 }
