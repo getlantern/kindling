@@ -438,6 +438,34 @@ func TestStartDelay_ExpiryDoesNotWaitOnHungHedge(t *testing.T) {
 	}
 }
 
+// The race's budget bounds a request until its response arrives, even when the
+// caller's own context has no deadline.
+func TestRaceTransport_BudgetCancelsInFlightRequest(t *testing.T) {
+	t.Parallel()
+	stalled := newStallingRT()
+	rt := newRaceTransport("test", testLog, func(string) {}, []Transport{
+		&mockTransport{name: "domainfront", newRoundTripper: stalled.connect},
+	})
+	req, err := http.NewRequest(http.MethodGet, "https://origin.example/v1/config", nil)
+	require.NoError(t, err)
+	budget, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan raceResult, 1)
+	go func() { done <- rt.race(budget, req, rt.transports, nil, true, nil) }()
+	select {
+	case res := <-done:
+		assert.False(t, res.final)
+		assert.Error(t, res.err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the race waited on a request past its budget")
+	}
+	select {
+	case <-stalled.cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request's context wasn't cancelled when the budget ran out")
+	}
+}
+
 // stubDelayedDNSTT is a DNSTunnel that sets its own start delay.
 type stubDelayedDNSTT struct {
 	stubDNSTT

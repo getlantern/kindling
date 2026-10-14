@@ -239,21 +239,12 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 	var queue []connectResult
 	// hedging is set once a transport joins on its delay; see above.
 	hedging := false
-	// hedged marks requests sent under hedging. serial counts those in flight
-	// that weren't, which is at most one.
-	hedged := map[int]bool{}
-	serial := 0
 	send := func(result connectResult) {
 		t.log.Debug("Transport connected, sending request", "name", result.name, "method", req.Method)
 		sendCtx, cancel := context.WithCancel(req.Context())
 		cancels[result.id] = cancel
 		clone := cloneRequest(req.WithContext(sendCtx), t.appName, result.name, bodyBytes)
 		inFlight++
-		if idempotent && hedging {
-			hedged[result.id] = true
-		} else {
-			serial++
-		}
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -333,6 +324,15 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 					heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", r.name, r.err))
 					rec.connectFailed(ctx, r.id, r.err, r.at)
 				}
+			case s := <-sends:
+				// A request that answered just as the budget ran out still
+				// counts: its response may be the usable one.
+				inFlight--
+				if res, final := t.settle(s, req.Method, idempotent, &heldResp, &heldID, &heldErr, cancels, rec); final {
+					keep(res.resp, res.id)
+					finish(res.id)
+					return res
+				}
 			default:
 				break drain
 			}
@@ -351,16 +351,8 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 		return raceResult{resp: heldResp, id: heldID, err: err}
 	}
 
-	// expired is set when the budget runs out with a request in flight. As
-	// before requests went out concurrently, a request sent the serial way is
-	// allowed to finish, but nothing new starts or sends. Hedged requests get
-	// no such allowance: they're replay-safe, and waiting on one that hangs
-	// would keep a held response from the caller indefinitely. They can still
-	// win while the serial request finishes; otherwise they're cancelled when
-	// the race returns.
-	expired := false
 	for {
-		if !expired && running == 0 && inFlight == 0 && len(queue) == 0 {
+		if running == 0 && inFlight == 0 && len(queue) == 0 {
 			if ctx.Err() != nil {
 				return timedOut()
 			}
@@ -389,16 +381,13 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 
 		var timer *time.Timer
 		var due <-chan time.Time
-		connected, done := (<-chan connectResult)(results), ctx.Done()
-		if expired {
-			connected, done = nil, nil
-		} else if d, ok := nextStart(pending); ok {
+		if d, ok := nextStart(pending); ok {
 			timer = time.NewTimer(d - time.Since(begin))
 			due = timer.C
 		}
 
 		select {
-		case result := <-connected:
+		case result := <-results:
 			running--
 			if result.err != nil {
 				t.log.Error("Transport connection failed",
@@ -421,20 +410,13 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 
 		case s := <-sends:
 			inFlight--
-			if !hedged[s.result.id] {
-				serial--
-			}
 			if res, final := t.settle(s, req.Method, idempotent, &heldResp, &heldID, &heldErr, cancels, rec); final {
 				keep(res.resp, res.id)
 				finish(res.id)
 				drainReady(ctx, results, rec)
 				return res
 			}
-			if expired {
-				if serial == 0 {
-					return timedOut()
-				}
-			} else if inFlight == 0 && len(queue) > 0 {
+			if inFlight == 0 && len(queue) > 0 {
 				next := queue[0]
 				queue = queue[1:]
 				send(next)
@@ -455,14 +437,11 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 				queue = nil
 			}
 
-		case <-done:
-			if serial == 0 {
-				if timer != nil {
-					timer.Stop()
-				}
-				return timedOut()
+		case <-ctx.Done():
+			if timer != nil {
+				timer.Stop()
 			}
-			expired = true
+			return timedOut()
 		}
 		if timer != nil {
 			timer.Stop()
