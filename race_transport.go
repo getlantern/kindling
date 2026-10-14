@@ -65,20 +65,25 @@ const IdempotentHeader = "X-Kindling-Idempotent"
 // regardless of method — no body has been transmitted on a connection that
 // never came up, so replay risk is zero.
 //
-// Transports are raced in priority tiers (see [transportPriority]). All
-// transports in the lowest-numbered tier race in parallel as described above;
-// a higher-numbered tier is started only once every transport in all
-// lower-numbered tiers has failed to produce a usable response. This reserves
-// slow, low-throughput fallbacks like DNS tunneling for the case where the
-// faster transports are blocked, rather than letting them compete on equal
-// footing. When every transport shares the default priority (the common case),
-// there is a single tier and behavior is unchanged.
+// Transports are grouped into priority tiers (see [transportPriority]) and
+// may carry a start delay (see [transportStartDelay]). Default-tier
+// transports without a delay race in parallel as described above. A transport
+// with a delay joins the race once its delay has passed, and a later tier
+// joins once every transport already racing has failed to produce a usable
+// response, whichever comes first. Transports already racing keep going.
+// This keeps slow, low-throughput fallbacks like DNS tunneling out of races
+// the faster transports win quickly, while still bringing them in promptly
+// when the faster ones hang rather than fail, as they do on networks that
+// drop packets silently. When every transport shares the default priority
+// and has no delay (the common case), all of them race at once.
 type raceTransport struct {
 	transports    []Transport
 	panicListener func(string)
 	appName       string
 	log           *slog.Logger
 	observer      func(context.Context, Race)
+	// startDelays overrides transports' own start delays, by name.
+	startDelays map[string]time.Duration
 }
 
 func newRaceTransport(appName string, log *slog.Logger, panicListener func(string), transports []Transport) *raceTransport {
@@ -119,123 +124,182 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	defer cancel()
 
 	idempotent := isRetryableMethod(req.Method) || req.Header.Get(IdempotentHeader) != ""
-	tiers := groupByPriority(eligible)
-
-	// Race each priority tier in turn. A tier that produces a usable response
-	// (final) returns immediately; otherwise we hold its best fallback (a
-	// retryable-status response and/or the last error) and try the next tier. Slow last-resort
-	// transports only get dialed once every faster tier has failed. heldResp /
-	// heldErr carry the best fallback seen across all tiers so far.
-	var heldResp *http.Response
-	heldID := -1
-	var heldErr error
-	for i, tier := range tiers {
-		// All transports in a tier share a priority, so the first reports it.
-		// "tier" is the 0-based race order; "priority" is the Priority() value.
-		t.log.Debug("Racing transport tier",
-			"tier", i,
-			"priority", priorityOf(tier[0]),
-			"count", len(tier),
-			"bodyLength", len(bodyBytes),
-		)
-		base := rec.racing(tier)
-		res := t.raceTier(ctx, req, tier, base, bodyBytes, idempotent, rec)
-		if res.final {
-			drainAndClose(heldResp)
-			if res.resp != nil && res.err == nil {
-				rec.won(res.id)
-			}
-			return res.resp, res.err
+	res := t.race(ctx, req, eligible, bodyBytes, idempotent, rec)
+	if res.final {
+		if res.resp != nil && res.err == nil {
+			rec.won(res.id)
 		}
-		// A retryable response held by this tier supersedes an earlier tier's fallback; an
-		// empty resp leaves the earlier one in place.
-		if res.resp != nil {
-			drainAndClose(heldResp)
-			heldResp, heldID = res.resp, res.id
-		}
-		if res.err != nil {
-			// Across tiers for the same reason as within one. A budget that
-			// expires mid-race returns heldErr alone, so assigning here meant a
-			// timeout was reported as a single strategy's failure while every
-			// other tier's reason — fronted, soar, direct — was discarded. That
-			// is what made a smart-dial DNS timeout look like the cause of a
-			// lookup that in fact had several independent failures.
-			//
-			// Joining also fixes errors.Is: a sentinel raised by any tier is now
-			// detectable, where before only the last tier's was.
-			heldErr = errors.Join(heldErr, res.err)
-		}
-		if ctx.Err() != nil {
-			// The request's time budget is shared across tiers; once it's
-			// spent (timeout or caller cancellation) there's no point dialing
-			// another tier. Fall through to the best result held so far.
-			break
-		}
+		return res.resp, res.err
 	}
 
-	// All tiers exhausted (or the budget ran out) without a usable response.
-	if heldResp != nil {
-		rec.won(heldID)
-		return heldResp, nil
+	// Every transport was tried (or the budget ran out) without a usable response.
+	if res.resp != nil {
+		rec.won(res.id)
+		return res.resp, nil
 	}
 	if ctx.Err() != nil {
-		// The budget ran out before a later tier could be tried, so the
-		// transports were not all exhausted. heldErr already conveys the
-		// timeout (raceTier sets it to a "timed out, transport errors" wrap or
-		// ctx.Err()); surface it directly rather than claiming every
-		// transport failed.
-		if heldErr != nil {
-			return nil, heldErr
+		// The budget ran out before every transport could be tried, so they
+		// were not all exhausted. res.err already conveys the timeout (race
+		// sets it to a "timed out, transport errors" wrap or ctx.Err());
+		// surface it directly rather than claiming every transport failed.
+		if res.err != nil {
+			return nil, res.err
 		}
 		return nil, ctx.Err()
 	}
-	if heldErr != nil {
-		return nil, fmt.Errorf("all transports failed: %w", heldErr)
+	if res.err != nil {
+		return nil, fmt.Errorf("all transports failed: %w", res.err)
 	}
 	return nil, errors.New("no transports produced a response")
 }
 
-// tierResult is the outcome of racing a single priority tier. When final is
-// true, resp/err are exactly what RoundTrip should return — either a usable
-// response or a single-shot non-idempotent result. When final is false the
-// tier produced no usable response; resp holds the best fallback (a retryable
-// 5xx or 403) and err every connection/request error joined, for RoundTrip to weigh
-// against earlier tiers and carry into the next one. A timeout always reports
-// final=false so RoundTrip can still surface a usable response held by an
-// earlier tier; it stops iterating because the shared ctx is then done.
-type tierResult struct {
+// raceResult is the outcome of a race. When final is true, resp/err are
+// exactly what RoundTrip should return — either a usable response or a
+// single-shot non-idempotent result. When final is false no transport
+// produced a usable response; resp holds the best fallback (a retryable 5xx
+// or 403) and err every connection/request error joined. A timeout always
+// reports final=false so RoundTrip can still return a held response.
+type raceResult struct {
 	resp  *http.Response
 	id    int // race position of the transport that produced resp
 	err   error
 	final bool
 }
 
-// raceTier connects every transport in a single priority tier in parallel and
-// applies the method-aware retry policy within that tier. See [raceTransport]
-// for the retry semantics; the only addition is that an exhausted tier returns
-// final=false so RoundTrip can advance to the next tier.
-func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []Transport, base int, bodyBytes []byte, idempotent bool, rec *raceRecord) tierResult {
-	// Each goroutine sends exactly one result, so the channel receives
-	// len(tier) messages.
-	results := make(chan connectResult, len(tier))
+// pendingTransport is one eligible transport's place in a race.
+type pendingTransport struct {
+	tr      Transport
+	tier    int
+	delay   time.Duration
+	started bool
+}
+
+// race connects the eligible transports and applies the method-aware retry
+// policy (see [raceTransport]) across all of them. A default-tier transport
+// with no start delay connects at once. Every other transport starts when its
+// delay elapses, or as soon as every transport started so far has failed to
+// produce a usable response, whichever comes first. In the second case the
+// whole lowest tier still waiting starts together. A transport in a later tier
+// with no delay waits for that. Transports already running keep going when
+// another starts, so whichever produces a usable response first wins.
+func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []Transport, bodyBytes []byte, idempotent bool, rec *raceRecord) raceResult {
+	begin := time.Now()
+	// Each started transport sends exactly one result, so the channel never
+	// holds more than len(eligible).
+	results := make(chan connectResult, len(eligible))
 	addr := hostWithPort(req.URL.Host, req.URL.Scheme)
-	for i, tr := range tier {
-		go t.connect(ctx, tr, base+i, addr, results)
+
+	var pending []*pendingTransport
+	for i, tier := range groupByPriority(eligible) {
+		for _, tr := range tier {
+			pending = append(pending, &pendingTransport{tr: tr, tier: i, delay: t.startDelayOf(tr)})
+		}
+	}
+	running := 0
+	start := func(p *pendingTransport, reason string) {
+		p.started = true
+		running++
+		id := rec.racing([]Transport{p.tr})
+		t.log.Debug("Starting transport",
+			"name", p.tr.Name(),
+			"reason", reason,
+			"priority", priorityOf(p.tr),
+			"after", time.Since(begin),
+			"bodyLength", len(bodyBytes),
+		)
+		go t.connect(ctx, p.tr, id, addr, results)
+	}
+	for _, p := range pending {
+		if p.tier == 0 && p.delay == 0 {
+			start(p, "first")
+		}
 	}
 
 	var heldResp *http.Response
 	heldID := -1
 	var heldErr error
 
-	for remaining := len(tier); remaining > 0; remaining-- {
+	// timedOut hands back whatever the race held as non-final, so RoundTrip
+	// can still return a held response.
+	timedOut := func() raceResult {
+		// Drain first. select chooses uniformly when several cases are
+		// ready, so a connectResult that has already landed can be passed
+		// over in favour of ctx.Done() and its error lost — which defeats
+		// the errors.Is guarantee precisely when a transport failed fast
+		// and the budget expired at about the same moment.
+		//
+		// Non-blocking, and deliberately no RoundTrip on anything drained:
+		// the budget is gone, so a transport that connected is not worth
+		// sending a request through. Only its failure, if any, is news.
+	drain:
+		for {
+			select {
+			case r := <-results:
+				if r.err != nil {
+					heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", r.name, r.err))
+					rec.connectFailed(ctx, r.id, r.err, r.at)
+				}
+			default:
+				break drain
+			}
+		}
+
+		err := heldErr
+		if err != nil {
+			// Not "last error" any more: heldErr carries every failure the
+			// race collected, so naming one would misdescribe the rest.
+			err = fmt.Errorf("timed out, transport errors: %w", err)
+		} else if heldResp == nil {
+			err = ctx.Err()
+		}
+		return raceResult{resp: heldResp, id: heldID, err: err}
+	}
+
+	for {
+		if running == 0 {
+			if ctx.Err() != nil {
+				return timedOut()
+			}
+			// Everything started so far has failed: start the lowest tier
+			// that still has transports waiting, without waiting out their
+			// delays.
+			next := -1
+			for _, p := range pending {
+				if !p.started && (next < 0 || p.tier < next) {
+					next = p.tier
+				}
+			}
+			if next < 0 {
+				// Every transport was tried without a usable response;
+				// bubble up the best fallback.
+				return raceResult{resp: heldResp, id: heldID, err: heldErr}
+			}
+			for _, p := range pending {
+				if !p.started && p.tier == next {
+					start(p, "others failed")
+				}
+			}
+		}
+
+		var timer *time.Timer
+		var due <-chan time.Time
+		if d, ok := nextStart(pending); ok {
+			timer = time.NewTimer(d - time.Since(begin))
+			due = timer.C
+		}
+
 		select {
 		case result := <-results:
+			if timer != nil {
+				timer.Stop()
+			}
+			running--
 			if result.err != nil {
 				t.log.Error("Transport connection failed",
 					"name", result.name,
 					"error", result.err,
 				)
-				// Joined, not assigned, and named. Transports in a tier race
+				// Joined, not assigned, and named. Transports race
 				// concurrently, so assigning kept only whichever lost last and
 				// silently dropped its siblings — and the name lived in
 				// connectResult rather than in the error, so even the survivor
@@ -266,7 +330,7 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 					rec.add(result.id, OutcomeWon, resp.StatusCode, nil)
 				}
 				drainReady(ctx, results, rec)
-				return tierResult{resp: resp, id: result.id, err: err, final: true}
+				return raceResult{resp: resp, id: result.id, err: err, final: true}
 			}
 
 			if err != nil {
@@ -306,50 +370,36 @@ func (t *raceTransport) raceTier(ctx context.Context, req *http.Request, tier []
 			drainAndClose(heldResp)
 			rec.add(result.id, OutcomeWon, resp.StatusCode, nil)
 			drainReady(ctx, results, rec)
-			return tierResult{resp: resp, id: result.id, final: true}
+			return raceResult{resp: resp, id: result.id, final: true}
 
-		case <-ctx.Done():
-			// Budget spent. Hand back whatever this tier held (if anything) as
-			// non-final so RoundTrip can prefer it or an earlier tier's
-			// fallback; RoundTrip stops iterating because ctx is now done.
-			//
-			// Drain first. select chooses uniformly when several cases are
-			// ready, so a connectResult that has already landed can be passed
-			// over in favour of this branch and its error lost — which defeats
-			// the errors.Is guarantee precisely when a transport failed fast
-			// and the budget expired at about the same moment.
-			//
-			// Non-blocking, and deliberately no RoundTrip on anything drained:
-			// the budget is gone, so a transport that connected is not worth
-			// sending a request through. Only its failure, if any, is news.
-		drain:
-			for {
-				select {
-				case r := <-results:
-					if r.err != nil {
-						heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", r.name, r.err))
-						rec.connectFailed(ctx, r.id, r.err, r.at)
-					}
-				default:
-					break drain
+		case <-due:
+			elapsed := time.Since(begin)
+			for _, p := range pending {
+				if !p.started && p.delay > 0 && p.delay <= elapsed {
+					start(p, "delay elapsed")
 				}
 			}
 
-			err := heldErr
-			if err != nil {
-				// Not "last error" any more: heldErr carries every failure this
-				// tier collected, so naming one would misdescribe the rest.
-				err = fmt.Errorf("timed out, transport errors: %w", err)
-			} else if heldResp == nil {
-				err = ctx.Err()
+		case <-ctx.Done():
+			if timer != nil {
+				timer.Stop()
 			}
-			return tierResult{resp: heldResp, id: heldID, err: err}
+			return timedOut()
 		}
 	}
+}
 
-	// Tier exhausted without a usable response; bubble up the best fallback so
-	// RoundTrip can try the next tier (or return it if none succeed).
-	return tierResult{resp: heldResp, id: heldID, err: heldErr}
+// nextStart returns the earliest start delay among transports still waiting,
+// if any is waiting on one.
+func nextStart(pending []*pendingTransport) (time.Duration, bool) {
+	var next time.Duration
+	found := false
+	for _, p := range pending {
+		if !p.started && p.delay > 0 && (!found || p.delay < next) {
+			next, found = p.delay, true
+		}
+	}
+	return next, found
 }
 
 // drainReady records connection failures that already arrived when a tier ends
@@ -452,6 +502,31 @@ func priorityOf(tr Transport) int {
 		return p.Priority()
 	}
 	return priorityDefault
+}
+
+// transportStartDelay is an optional interface a Transport may implement to
+// join the race late. A transport with a delay starts that long into the
+// request, or sooner if every transport already racing fails first. Zero, the
+// default, means a default-tier transport starts at once and a later-tier one
+// waits for the tiers before it to fail.
+type transportStartDelay interface {
+	StartDelay() time.Duration
+}
+
+// startDelayOf reports a transport's start delay: the one set by
+// [WithStartDelay] if any, else its own, else zero.
+func (t *raceTransport) startDelayOf(tr Transport) time.Duration {
+	if d, ok := t.startDelays[tr.Name()]; ok {
+		return d
+	}
+	return startDelayOf(tr)
+}
+
+func startDelayOf(tr Transport) time.Duration {
+	if d, ok := tr.(transportStartDelay); ok {
+		return d.StartDelay()
+	}
+	return 0
 }
 
 // groupByPriority splits transports into tiers ordered by ascending priority.

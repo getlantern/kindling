@@ -299,13 +299,13 @@ footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; g
       <article class="stick wide last">
         <div class="top"><span class="name">soar</span><span class="tier">Last resort</span></div>
         <h3>Soar DNS tunnel</h3>
-        <p><a href="https://soar.lantern.io">Soar</a> carries the request inside DNS queries through whatever resolvers the network allows, including in Russia, where UDP is intercepted, and in China, where forged answers are injected. It's slower than the others, so kindling dials it only after every tier 1 transport has failed.</p>
+        <p><a href="https://soar.lantern.io">Soar</a> carries the request inside DNS queries through whatever resolvers the network allows, including in Russia, where UDP is intercepted, and in China, where forged answers are injected. It's slower than the others, so kindling holds it back: it joins after 8 seconds without a response, or at once if every tier 1 transport has failed.</p>
         <div class="limits"><span>works when only DNS does</span><span>connects in under 1 s</span></div>
       </article>
       <article class="stick wide yours">
         <div class="top"><span class="name">WithTransport(…)</span><span class="tier">Tier 1 by default</span></div>
         <h3>Your transport</h3>
-        <p>Anything that can return an <code>http.RoundTripper</code> can join the race. Implement the <code>Transport</code> interface, returning 0 from <code>MaxLength()</code> and <code>RequestTimeout()</code> for no cap and the default timeout, and add an optional <code>Priority() int</code> to race in a later tier. Kindling handles the racing, retries and timeouts.</p>
+        <p>Anything that can return an <code>http.RoundTripper</code> can join the race. Implement the <code>Transport</code> interface, returning 0 from <code>MaxLength()</code> and <code>RequestTimeout()</code> for no cap and the default timeout, and add an optional <code>Priority() int</code> to race in a later tier or <code>StartDelay() time.Duration</code> to join late. Kindling handles the racing, retries and timeouts.</p>
       </article>
     </div>
   </section>
@@ -319,7 +319,7 @@ footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; g
       <div class="step"><h3>Filter</h3><p>Transports that can't carry this request are skipped: a body over a transport's size cap, or a streaming request on a transport that can't stream.</p></div>
       <div class="step"><h3>Race a tier</h3><p>Every transport in the first tier starts connecting at once. Transports pre-connect, so the race measures real reachability on this network.</p></div>
       <div class="step"><h3>Send once</h3><p>The first transport to connect gets the request. Requests are sent one at a time, never in parallel, so a POST can't hit the server twice.</p></div>
-      <div class="step"><h3>Fall back</h3><p>If the whole tier fails, the next tier starts. That's how Soar stays out of the way on networks where faster routes work.</p></div>
+      <div class="step"><h3>Fall back</h3><p>If the whole tier fails, the next tier starts at once. A transport with a start delay also joins once its delay passes, so a tier that hangs instead of failing doesn't hold it up. That's how Soar stays out of the way on networks where faster routes work, and still arrives where they don't.</p></div>
     </div>
     <div class="retry">
       <table>

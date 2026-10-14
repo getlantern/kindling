@@ -28,6 +28,7 @@ type mockTransport struct {
 	maxLength       int
 	reqTimeout      time.Duration
 	priority        int
+	startDelay      time.Duration
 	newRoundTripper func(ctx context.Context, addr string) (http.RoundTripper, error)
 }
 
@@ -36,6 +37,7 @@ func (m *mockTransport) IsStreamable() bool            { return m.isStreamable }
 func (m *mockTransport) MaxLength() int                { return m.maxLength }
 func (m *mockTransport) RequestTimeout() time.Duration { return m.reqTimeout }
 func (m *mockTransport) Priority() int                 { return m.priority }
+func (m *mockTransport) StartDelay() time.Duration     { return m.startDelay }
 func (m *mockTransport) NewRoundTripper(ctx context.Context, addr string) (http.RoundTripper, error) {
 	return m.newRoundTripper(ctx, addr)
 }
