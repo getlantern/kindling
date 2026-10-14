@@ -466,6 +466,48 @@ func TestRaceTransport_BudgetCancelsInFlightRequest(t *testing.T) {
 	}
 }
 
+// readsBody reads the request body, then answers per rt.
+func readsBody(rt func(*http.Request) (*http.Response, error)) func(context.Context, string) (http.RoundTripper, error) {
+	return func(context.Context, string) (http.RoundTripper, error) {
+		return roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.Body != nil {
+				_, _ = io.Copy(io.Discard, req.Body)
+			}
+			return rt(req)
+		}), nil
+	}
+}
+
+// Hedged attempts read the request body concurrently, so each needs its own
+// reader, even when the body is empty. Run with -race.
+func TestStartDelay_HedgedAttemptsDontShareEmptyBody(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	rt := newRaceTransport("test", testLog, func(string) {}, []Transport{
+		&mockTransport{name: "domainfront", newRoundTripper: readsBody(func(req *http.Request) (*http.Response, error) {
+			select {
+			case <-req.Context().Done():
+				return nil, req.Context().Err()
+			case <-release:
+				return nil, errors.New("released")
+			}
+		})},
+		&mockTransport{name: "soar", priority: priorityLastResort, startDelay: 20 * time.Millisecond,
+			newRoundTripper: readsBody(func(*http.Request) (*http.Response, error) {
+				return statusRT(http.StatusOK).RoundTrip(nil)
+			})},
+	})
+	// Not a *strings.Reader, so NewRequest keeps it rather than using NoBody.
+	body := struct{ io.Reader }{strings.NewReader("")}
+	req, err := http.NewRequest(http.MethodGet, "https://origin.example/v1/config", body)
+	require.NoError(t, err)
+	resp, err := rt.RoundTrip(req)
+	close(release)
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
 // stubDelayedDNSTT is a DNSTunnel that sets its own start delay.
 type stubDelayedDNSTT struct {
 	stubDNSTT

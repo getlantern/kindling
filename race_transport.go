@@ -331,6 +331,7 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 				if res, final := t.settle(s, req.Method, idempotent, &heldResp, &heldID, &heldErr, cancels, rec); final {
 					keep(res.resp, res.id)
 					finish(res.id)
+					drainReady(ctx, results, rec)
 					return res
 				}
 			default:
@@ -747,9 +748,13 @@ func cloneRequest(req *http.Request, app, method string, bodyBytes []byte) *http
 	clone := req.Clone(req.Context())
 	clone.Header.Set("X-Kindling-App", app)
 	clone.Header.Set("X-Kindling-Method", method)
-	if req.Body != nil && req.Body != http.NoBody && len(bodyBytes) > 0 {
+	if req.Body != nil && req.Body != http.NoBody {
+		// Every attempt gets its own reader, even for an empty body: hedged
+		// attempts read concurrently.
 		clone.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-		clone.ContentLength = int64(len(bodyBytes))
+		if len(bodyBytes) > 0 {
+			clone.ContentLength = int64(len(bodyBytes))
+		}
 	}
 	return clone
 }
