@@ -14,9 +14,9 @@ The idea is to continually add more techniques as they become available such tha
 
 ## Transport racing and priorities
 
-Kindling races the configured transports against each other and returns the first usable response. Transports race in priority tiers: every transport in the default tier connects in parallel, and a lower-priority tier is dialed only once every transport in the higher-priority tiers has failed to produce a usable response.
+Kindling races the configured transports against each other and returns the first usable response. Every transport in the default tier connects in parallel. A transport with a start delay joins the race once its delay has passed, and a lower-priority tier joins as soon as every transport already racing has failed to produce a usable response, whichever comes first. Transports already racing keep going, so whichever produces a usable response first wins.
 
-DNS tunneling (`WithDNSTunnel`) is registered as a **last resort**. It keeps working under heavy censorship but is slow and low-throughput, so it is only dialed when the faster transports (domain fronting, proxyless dialing, AMP caching) are all blocked. Custom transports added via `WithTransport` default to the top tier; a transport can opt into a later tier by implementing `Priority() int` (higher numbers race later).
+DNS tunneling (`WithDNSTunnel`) is registered as a **last resort**. It keeps working under heavy censorship but is slow and low-throughput, so it joins the race only after `DefaultDNSTunnelStartDelay` (8 s), or sooner if the faster transports (domain fronting, proxyless dialing, AMP caching) have all failed by then. Censored networks often drop packets rather than refuse connections, so the faster transports can hang instead of failing; the delay brings the tunnel in without waiting out the whole request. `WithStartDelay(name, d)` changes any transport's delay. Custom transports added via `WithTransport` default to the top tier; a transport can opt into a later tier by implementing `Priority() int` (higher numbers race later).
 
 ## Proxyless aliases
 
@@ -102,7 +102,7 @@ type Transport interface {
 }
 ```
 
-A transport can also implement `Priority() int` to race in a later tier.
+A transport can also implement `Priority() int` to race in a later tier, and `StartDelay() time.Duration` to join the race late.
 
 You can then use this as follows:
 

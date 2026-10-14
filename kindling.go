@@ -46,6 +46,16 @@ const (
 	priorityLastResort = 100
 )
 
+// DefaultDNSTunnelStartDelay is how long into a request WithDNSTunnel's
+// transport joins the race if the faster transports have neither succeeded nor
+// all failed by then. Censored networks often drop packets rather than reset
+// connections, so the faster transports can hang for most of the request's
+// budget before failing. In Lantern's client telemetry, smart dialing and
+// domain fronting that win do so within about 8 s at the 90th percentile in
+// China, Iran and Russia, so starting later keeps the tunnel out of almost
+// every race they win.
+const DefaultDNSTunnelStartDelay = 8 * time.Second
+
 // Kindling creates HTTP clients that race requests across multiple censorship
 // circumvention transports, returning the first successful response.
 type Kindling interface {
@@ -109,6 +119,9 @@ type kindling struct {
 	proxylessAliases map[string]string
 	// raceObserver, if set, hears how each request's race went.
 	raceObserver func(context.Context, Race)
+	// startDelays overrides transports' start delays, by name. Set via
+	// WithStartDelay.
+	startDelays map[string]time.Duration
 	// deferred holds option work that must run after every other option
 	// has had a chance to mutate the struct. Used by WithProxyless so it
 	// reads streamDialer/packetDialer after WithStreamDialer /
@@ -184,6 +197,7 @@ func (k *kindling) ReplaceTransport(name TransportName, rt func(ctx context.Cont
 				isStreamable: tr.IsStreamable(),
 				reqTimeout:   tr.RequestTimeout(),
 				priority:     priorityOf(tr),
+				startDelay:   startDelayOf(tr),
 				newRT:        rt,
 			}
 			return nil
@@ -311,9 +325,12 @@ type DNSTunnel interface {
 }
 
 // WithDNSTunnel adds DNS tunneling via the provided DNSTunnel. DNS tunneling
-// is raced only as a last resort: it keeps working under heavy censorship but
-// is slow and low-throughput, so the race transport reaches for it only after
-// every faster transport has failed to produce a usable response.
+// keeps working under heavy censorship but is slow and low-throughput, so it
+// is held back as a last resort: it joins the race
+// [DefaultDNSTunnelStartDelay] into a request, or as soon as every faster
+// transport has failed if that comes first. A DNSTunnel can set its own delay
+// with a StartDelay() time.Duration method, and [WithStartDelay] overrides
+// both.
 func WithDNSTunnel(d DNSTunnel) Option {
 	return func(k *kindling) error {
 		if d == nil {
@@ -324,6 +341,10 @@ func WithDNSTunnel(d DNSTunnel) Option {
 			isStreamable: true,
 			newRT:        d.NewRoundTripper,
 			priority:     priorityLastResort,
+			startDelay:   DefaultDNSTunnelStartDelay,
+		}
+		if sd, ok := d.(transportStartDelay); ok {
+			nt.startDelay = sd.StartDelay()
 		}
 		if tt, ok := d.(interface{ RequestTimeout() time.Duration }); ok {
 			nt.reqTimeout = tt.RequestTimeout()
@@ -332,6 +353,25 @@ func WithDNSTunnel(d DNSTunnel) Option {
 			nt.maxLength = tt.MaxLength()
 		}
 		k.transports = append(k.transports, nt)
+		return nil
+	}
+}
+
+// WithStartDelay sets how long into a request the named transport joins the
+// race, overriding the transport's own delay. It still joins sooner if every
+// transport already racing fails first. Zero starts a default-tier transport at
+// once and makes a later-tier one wait for the tiers before it to fail. For
+// example, WithStartDelay(TransportDNSTunnel, 5*time.Second) brings the DNS
+// tunnel in earlier than [DefaultDNSTunnelStartDelay].
+func WithStartDelay(name TransportName, d time.Duration) Option {
+	return func(k *kindling) error {
+		if d < 0 {
+			return fmt.Errorf("start delay for %q is negative", name)
+		}
+		if k.startDelays == nil {
+			k.startDelays = map[string]time.Duration{}
+		}
+		k.startDelays[string(name)] = d
 		return nil
 	}
 }
@@ -439,6 +479,7 @@ type namedTransport struct {
 	newRT        func(ctx context.Context, addr string) (http.RoundTripper, error)
 	reqTimeout   time.Duration
 	priority     int
+	startDelay   time.Duration
 }
 
 func (t *namedTransport) Name() string                  { return t.name }
@@ -446,6 +487,7 @@ func (t *namedTransport) MaxLength() int                { return t.maxLength }
 func (t *namedTransport) IsStreamable() bool            { return t.isStreamable }
 func (t *namedTransport) RequestTimeout() time.Duration { return t.reqTimeout }
 func (t *namedTransport) Priority() int                 { return t.priority }
+func (t *namedTransport) StartDelay() time.Duration     { return t.startDelay }
 
 func (t *namedTransport) NewRoundTripper(ctx context.Context, addr string) (http.RoundTripper, error) {
 	return t.newRT(ctx, addr)
@@ -574,5 +616,6 @@ func NewSmartHTTPTransportWithConfig(
 func (k *kindling) newRaceTransport(transports []Transport) *raceTransport {
 	rt := newRaceTransport(k.appName, k.log, k.panicListener, transports)
 	rt.observer = k.raceObserver
+	rt.startDelays = k.startDelays
 	return rt
 }

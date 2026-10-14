@@ -46,7 +46,7 @@ type Race struct {
 
 // WithRaceObserver calls fn after every request with how each transport fared,
 // on the request's goroutine and with its context, before RoundTrip returns.
-// fn should be quick. Transports in tiers that were never raced are left out.
+// fn should be quick. Transports that never joined the race are left out.
 func WithRaceObserver(fn func(ctx context.Context, race Race)) Option {
 	return func(k *kindling) error {
 		k.raceObserver = fn
@@ -69,7 +69,8 @@ func newRaceRecord() *raceRecord {
 	return &raceRecord{start: time.Now()}
 }
 
-// racing registers a tier and returns the race position of its first transport.
+// racing registers transports joining the race and returns the race position
+// of the first.
 func (r *raceRecord) racing(tier []Transport) int {
 	if r == nil {
 		return 0
