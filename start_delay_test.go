@@ -1,11 +1,13 @@
 package kindling
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -287,6 +289,42 @@ func TestStartDelay_QueuedConnectionSentWhenHedgingStarts(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.GreaterOrEqual(t, took, 100*time.Millisecond, "smart sent alongside domainfront before anything joined late")
 	assert.Less(t, took, 5*time.Second, "smart stayed queued after soar joined")
+}
+
+// rwBody is a writable response body, like the upgraded connection net/http
+// returns for 101 Switching Protocols.
+type rwBody struct {
+	io.Reader
+	written bytes.Buffer
+	closed  bool
+}
+
+func (b *rwBody) Write(p []byte) (int, error) { return b.written.Write(p) }
+func (b *rwBody) Close() error                { b.closed = true; return nil }
+
+// Wrapping the winner's body for cancellation must keep it writable, or a
+// caller can't use an upgraded connection.
+func TestRaceTransport_UpgradedBodyStaysWritable(t *testing.T) {
+	t.Parallel()
+	body := &rwBody{Reader: strings.NewReader("")}
+	rt := newRaceTransport("test", testLog, func(string) {}, []Transport{
+		&mockTransport{name: "smart", newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+			return roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: body}, nil
+			}), nil
+		}},
+	})
+	req, err := http.NewRequest(http.MethodGet, "https://origin.example/ws", nil)
+	require.NoError(t, err)
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	rwc, ok := resp.Body.(io.ReadWriteCloser)
+	require.True(t, ok, "the upgraded body lost its Write method")
+	_, err = rwc.Write([]byte("hello"))
+	require.NoError(t, err)
+	require.NoError(t, rwc.Close())
+	assert.Equal(t, "hello", body.written.String())
+	assert.True(t, body.closed)
 }
 
 // stubDelayedDNSTT is a DNSTunnel that sets its own start delay.

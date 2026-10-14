@@ -286,7 +286,14 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 			cancel()
 			return
 		}
-		resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+		body := &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+		if w, ok := resp.Body.(io.Writer); ok {
+			// A 101 Switching Protocols body is the upgraded connection,
+			// which callers write to as well.
+			resp.Body = &cancelOnCloseWriter{cancelOnClose: body, Writer: w}
+			return
+		}
+		resp.Body = body
 	}
 
 	var heldResp *http.Response
@@ -523,6 +530,12 @@ func (c *cancelOnClose) Close() error {
 	err := c.ReadCloser.Close()
 	c.cancel()
 	return err
+}
+
+// cancelOnCloseWriter is a cancelOnClose for a body that's also writable.
+type cancelOnCloseWriter struct {
+	*cancelOnClose
+	io.Writer
 }
 
 // nextStart returns the earliest start delay among transports still waiting,
