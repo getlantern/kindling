@@ -268,7 +268,11 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 		if inFlight > 0 {
 			go func(n int) {
 				for range n {
-					drainAndClose((<-sends).resp)
+					// Closed, not drained: the request is cancelled, and an
+					// upgraded connection would never reach EOF.
+					if resp := (<-sends).resp; resp != nil && resp.Body != nil {
+						_ = resp.Body.Close()
+					}
 				}
 			}(inFlight)
 		}
@@ -484,8 +488,8 @@ func (t *raceTransport) settle(s sent, method string, idempotent bool, heldResp 
 		// err == nil for the success direction). Drain + close
 		// defensively so we don't leak the body / connection.
 		rec.add(result.id, OutcomeRequestFailed, statusOf(resp), err)
-		drainAndClose(resp)
 		cancels[result.id]()
+		drainAndClose(resp)
 		*heldErr = errors.Join(*heldErr, fmt.Errorf("transport %s: %w", result.name, err))
 		return raceResult{}, false
 	}
@@ -500,8 +504,10 @@ func (t *raceTransport) settle(s sent, method string, idempotent bool, heldResp 
 			"status", resp.StatusCode,
 		)
 		if *heldResp != nil {
-			drainAndClose(*heldResp)
+			// Cancelled first, so a held body that stalls can't block the
+			// drain.
 			cancels[*heldID]()
+			drainAndClose(*heldResp)
 		}
 		*heldResp, *heldID = resp, result.id
 		*heldErr = errors.Join(*heldErr, fmt.Errorf("transport %s: http status %d", result.name, resp.StatusCode))
@@ -512,8 +518,8 @@ func (t *raceTransport) settle(s sent, method string, idempotent bool, heldResp 
 	// 2xx, 3xx, or any other 4xx on an idempotent method: that 4xx is
 	// the server's verdict on the request itself, retry won't help.
 	if *heldResp != nil {
-		drainAndClose(*heldResp)
 		cancels[*heldID]()
+		drainAndClose(*heldResp)
 		*heldResp, *heldID = nil, -1
 	}
 	rec.add(result.id, OutcomeWon, resp.StatusCode, nil)

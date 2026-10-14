@@ -327,6 +327,77 @@ func TestRaceTransport_UpgradedBodyStaysWritable(t *testing.T) {
 	assert.True(t, body.closed)
 }
 
+// blockingBody never reaches EOF: Read blocks until the body is closed or ctx
+// ends, like an upgraded connection or a stalled stream.
+type blockingBody struct {
+	ctx    context.Context
+	closed chan struct{}
+	once   atomic.Bool
+}
+
+func newBlockingBody(ctx context.Context) *blockingBody {
+	return &blockingBody{ctx: ctx, closed: make(chan struct{})}
+}
+
+func (b *blockingBody) Read([]byte) (int, error) {
+	select {
+	case <-b.closed:
+		return 0, io.ErrClosedPipe
+	case <-b.ctx.Done():
+		return 0, b.ctx.Err()
+	}
+}
+
+func (b *blockingBody) Close() error {
+	if b.once.CompareAndSwap(false, true) {
+		close(b.closed)
+	}
+	return nil
+}
+
+// A held retryable response whose body stalls must not block the race when a
+// usable response arrives: its request is cancelled before the body is
+// drained.
+func TestRaceTransport_StalledHeldBodyDoesNotBlock(t *testing.T) {
+	t.Parallel()
+	rt := newRaceTransport("test", testLog, func(string) {}, []Transport{
+		&mockTransport{name: "smart", newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+			return roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: newBlockingBody(req.Context())}, nil
+			}), nil
+		}},
+		&mockTransport{name: "domainfront", newRoundTripper: after(50*time.Millisecond, http.StatusOK)},
+	})
+	resp, err, took := roundTrip(t, rt, http.MethodGet)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Less(t, took, 5*time.Second, "draining the held 503 blocked the race")
+}
+
+// A losing response that arrives after the race ends is closed even if its
+// body never reaches EOF, as with an upgraded connection.
+func TestRaceTransport_LateLoserBodyClosed(t *testing.T) {
+	t.Parallel()
+	loser := newBlockingBody(context.Background())
+	rt := newRaceTransport("test", testLog, func(string) {}, []Transport{
+		&mockTransport{name: "domainfront", newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+			return roundTripFunc(func(*http.Request) (*http.Response, error) {
+				time.Sleep(200 * time.Millisecond) // answers after soar has won
+				return &http.Response{StatusCode: http.StatusSwitchingProtocols, Body: loser}, nil
+			}), nil
+		}},
+		&mockTransport{name: "soar", priority: priorityLastResort, startDelay: 20 * time.Millisecond, newRoundTripper: returns(http.StatusOK)},
+	})
+	resp, err, _ := roundTrip(t, rt, http.MethodGet)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	select {
+	case <-loser.closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the losing response's body was never closed")
+	}
+}
+
 // stubDelayedDNSTT is a DNSTunnel that sets its own start delay.
 type stubDelayedDNSTT struct {
 	stubDNSTT
