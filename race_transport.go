@@ -172,9 +172,6 @@ type pendingTransport struct {
 	tier    int
 	delay   time.Duration
 	started bool
-	// late is set when the transport joined on its start delay while others
-	// were still racing.
-	late bool
 }
 
 // sent is the outcome of sending the request through one connection.
@@ -194,10 +191,11 @@ type sent struct {
 // another starts, so whichever produces a usable response first wins.
 //
 // Requests go out one at a time: a connection that arrives while a request is
-// in flight waits its turn. The exception is a replay-safe request on a
-// transport that joined late. The delay exists to rescue attempts that hang,
-// and a request that connected but never answers is one, so the late
-// transport sends alongside it rather than behind it.
+// in flight waits its turn. The exception is a replay-safe request once any
+// transport has joined on its start delay. The delay exists to rescue
+// attempts that hang, and a request that connected but never answers is one,
+// so from then on every connection sends as soon as it's up, alongside
+// whatever is in flight rather than behind it.
 func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []Transport, bodyBytes []byte, idempotent bool, rec *raceRecord) raceResult {
 	begin := time.Now()
 	// Each started transport sends exactly one connect result and at most one
@@ -212,13 +210,12 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 			pending = append(pending, &pendingTransport{tr: tr, tier: i, delay: t.startDelayOf(tr)})
 		}
 	}
-	var byID []*pendingTransport // by race position
-	running := 0
+	running, nextID := 0, 0
 	start := func(p *pendingTransport, reason string) {
 		p.started = true
 		running++
-		id := len(byID)
-		byID = append(byID, p)
+		id := nextID
+		nextID++
 		rec.racing([]Transport{p.tr})
 		t.log.Debug("Starting transport",
 			"name", p.tr.Name(),
@@ -240,6 +237,8 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 	cancels := map[int]context.CancelFunc{}
 	inFlight := 0
 	var queue []connectResult
+	// hedging is set once a transport joins on its delay; see above.
+	hedging := false
 	send := func(result connectResult) {
 		t.log.Debug("Transport connected, sending request", "name", result.name, "method", req.Method)
 		sendCtx, cancel := context.WithCancel(req.Context())
@@ -390,7 +389,7 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 				// strategy produced it.
 				heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", result.name, result.err))
 				rec.connectFailed(ctx, result.id, result.err, result.at)
-			} else if inFlight == 0 || (idempotent && byID[result.id].late) {
+			} else if inFlight == 0 || (idempotent && hedging) {
 				send(result)
 			} else {
 				queue = append(queue, result)
@@ -418,9 +417,15 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 			elapsed := time.Since(begin)
 			for _, p := range pending {
 				if !p.started && p.delay > 0 && p.delay <= elapsed {
-					p.late = true
+					hedging = true
 					start(p, "delay elapsed")
 				}
+			}
+			if hedging && idempotent {
+				for _, r := range queue {
+					send(r)
+				}
+				queue = nil
 			}
 
 		case <-done:

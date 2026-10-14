@@ -255,6 +255,40 @@ func TestStartDelay_NonIdempotentStaysSingleShot(t *testing.T) {
 	assert.False(t, soarSent.Load(), "a POST was sent a second time")
 }
 
+// The late transport can be the one that hangs. A transport that connects after
+// it must not wait behind it.
+func TestStartDelay_EarlierTransportNotQueuedBehindStalledLateOne(t *testing.T) {
+	t.Parallel()
+	stalled := newStallingRT()
+	rt := newRaceTransport("test", testLog, func(string) {}, []Transport{
+		&mockTransport{name: "domainfront", newRoundTripper: after(150*time.Millisecond, http.StatusOK)},
+		&mockTransport{name: "soar", priority: priorityLastResort, startDelay: 20 * time.Millisecond,
+			newRoundTripper: stalled.connect},
+	})
+	resp, err, took := roundTrip(t, rt, http.MethodGet)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.True(t, stalled.sent.Load(), "soar connected first, so it should have sent")
+	assert.Less(t, took, 5*time.Second, "domainfront waited behind the stalled soar request")
+}
+
+// A connection queued behind a hung request is sent as soon as a transport
+// joins late, not only when the hung request ends.
+func TestStartDelay_QueuedConnectionSentWhenHedgingStarts(t *testing.T) {
+	t.Parallel()
+	stalled := newStallingRT()
+	rt := newRaceTransport("test", testLog, func(string) {}, []Transport{
+		&mockTransport{name: "domainfront", newRoundTripper: stalled.connect},
+		&mockTransport{name: "smart", newRoundTripper: after(20*time.Millisecond, http.StatusOK)},
+		&mockTransport{name: "soar", priority: priorityLastResort, startDelay: 100 * time.Millisecond, newRoundTripper: hangs},
+	})
+	resp, err, took := roundTrip(t, rt, http.MethodGet)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.GreaterOrEqual(t, took, 100*time.Millisecond, "smart sent alongside domainfront before anything joined late")
+	assert.Less(t, took, 5*time.Second, "smart stayed queued after soar joined")
+}
+
 // stubDelayedDNSTT is a DNSTunnel that sets its own start delay.
 type stubDelayedDNSTT struct {
 	stubDNSTT
