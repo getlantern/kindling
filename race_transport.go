@@ -172,6 +172,16 @@ type pendingTransport struct {
 	tier    int
 	delay   time.Duration
 	started bool
+	// late is set when the transport joined on its start delay while others
+	// were still racing.
+	late bool
+}
+
+// sent is the outcome of sending the request through one connection.
+type sent struct {
+	result connectResult
+	resp   *http.Response
+	err    error
 }
 
 // race connects the eligible transports and applies the method-aware retry
@@ -182,11 +192,18 @@ type pendingTransport struct {
 // whole lowest tier still waiting starts together. A transport in a later tier
 // with no delay waits for that. Transports already running keep going when
 // another starts, so whichever produces a usable response first wins.
+//
+// Requests go out one at a time: a connection that arrives while a request is
+// in flight waits its turn. The exception is a replay-safe request on a
+// transport that joined late. The delay exists to rescue attempts that hang,
+// and a request that connected but never answers is one, so the late
+// transport sends alongside it rather than behind it.
 func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []Transport, bodyBytes []byte, idempotent bool, rec *raceRecord) raceResult {
 	begin := time.Now()
-	// Each started transport sends exactly one result, so the channel never
-	// holds more than len(eligible).
+	// Each started transport sends exactly one connect result and at most one
+	// request, so neither channel ever holds more than len(eligible).
 	results := make(chan connectResult, len(eligible))
+	sends := make(chan sent, len(eligible))
 	addr := hostWithPort(req.URL.Host, req.URL.Scheme)
 
 	var pending []*pendingTransport
@@ -195,11 +212,14 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 			pending = append(pending, &pendingTransport{tr: tr, tier: i, delay: t.startDelayOf(tr)})
 		}
 	}
+	var byID []*pendingTransport // by race position
 	running := 0
 	start := func(p *pendingTransport, reason string) {
 		p.started = true
 		running++
-		id := rec.racing([]Transport{p.tr})
+		id := len(byID)
+		byID = append(byID, p)
+		rec.racing([]Transport{p.tr})
 		t.log.Debug("Starting transport",
 			"name", p.tr.Name(),
 			"reason", reason,
@@ -213,6 +233,61 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 		if p.tier == 0 && p.delay == 0 {
 			start(p, "first")
 		}
+	}
+
+	// Each request gets its own context, so a request still in flight when
+	// another wins can be cancelled without touching the winner's body.
+	cancels := map[int]context.CancelFunc{}
+	inFlight := 0
+	var queue []connectResult
+	send := func(result connectResult) {
+		t.log.Debug("Transport connected, sending request", "name", result.name, "method", req.Method)
+		sendCtx, cancel := context.WithCancel(req.Context())
+		cancels[result.id] = cancel
+		clone := cloneRequest(req.WithContext(sendCtx), t.appName, result.name, bodyBytes)
+		inFlight++
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					msg := fmt.Sprintf("panic in transport %s: %v", result.name, r)
+					t.panicListener(msg)
+					sends <- sent{result: result, err: errors.New(msg)}
+				}
+			}()
+			resp, err := result.rt.RoundTrip(clone)
+			sends <- sent{result: result, resp: resp, err: err}
+		}()
+	}
+	// finish cancels every request but keep's, and closes the responses of
+	// any still in flight once they arrive.
+	finish := func(keep int) {
+		for id, cancel := range cancels {
+			if id != keep {
+				cancel()
+			}
+		}
+		if inFlight > 0 {
+			go func(n int) {
+				for range n {
+					drainAndClose((<-sends).resp)
+				}
+			}(inFlight)
+		}
+	}
+
+	// keep hands resp to the caller. Its body outlives the race, so its
+	// request's context is cancelled when the caller closes it; with no
+	// response, at once.
+	keep := func(resp *http.Response, id int) {
+		cancel, ok := cancels[id]
+		if !ok {
+			return
+		}
+		if resp == nil || resp.Body == nil {
+			cancel()
+			return
+		}
+		resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
 	}
 
 	var heldResp *http.Response
@@ -243,6 +318,8 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 				break drain
 			}
 		}
+		keep(heldResp, heldID)
+		finish(heldID)
 
 		err := heldErr
 		if err != nil {
@@ -255,8 +332,12 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 		return raceResult{resp: heldResp, id: heldID, err: err}
 	}
 
+	// expired is set when the budget runs out with a request in flight. As
+	// before requests went out concurrently, a request already sent is
+	// allowed to finish, but nothing new starts or sends.
+	expired := false
 	for {
-		if running == 0 {
+		if !expired && running == 0 && inFlight == 0 && len(queue) == 0 {
 			if ctx.Err() != nil {
 				return timedOut()
 			}
@@ -272,6 +353,8 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 			if next < 0 {
 				// Every transport was tried without a usable response;
 				// bubble up the best fallback.
+				keep(heldResp, heldID)
+				finish(heldID)
 				return raceResult{resp: heldResp, id: heldID, err: heldErr}
 			}
 			for _, p := range pending {
@@ -283,16 +366,16 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 
 		var timer *time.Timer
 		var due <-chan time.Time
-		if d, ok := nextStart(pending); ok {
+		connected, done := (<-chan connectResult)(results), ctx.Done()
+		if expired {
+			connected, done = nil, nil
+		} else if d, ok := nextStart(pending); ok {
 			timer = time.NewTimer(d - time.Since(begin))
 			due = timer.C
 		}
 
 		select {
-		case result := <-results:
-			if timer != nil {
-				timer.Stop()
-			}
+		case result := <-connected:
 			running--
 			if result.err != nil {
 				t.log.Error("Transport connection failed",
@@ -307,86 +390,134 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 				// strategy produced it.
 				heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", result.name, result.err))
 				rec.connectFailed(ctx, result.id, result.err, result.at)
-				continue
+			} else if inFlight == 0 || (idempotent && byID[result.id].late) {
+				send(result)
+			} else {
+				queue = append(queue, result)
 			}
 
-			t.log.Debug("Transport connected, sending request", "name", result.name, "method", req.Method)
-			clone := cloneRequest(req, t.appName, result.name, bodyBytes)
-			resp, err := result.rt.RoundTrip(clone)
-
-			if !idempotent {
-				// Single-shot: return whatever happened. Retrying on a non-
-				// idempotent method risks replaying side effects.
-				//
-				// Named here too, because this branch returns before the
-				// attribution below and POST is exactly where it matters: the
-				// registration call that motivated naming these errors is a
-				// POST, so without this the one path under investigation was
-				// the one path still returning an unattributed error.
-				if err != nil {
-					rec.add(result.id, OutcomeRequestFailed, statusOf(resp), err)
-					err = fmt.Errorf("transport %s: %w", result.name, err)
-				} else {
-					rec.add(result.id, OutcomeWon, resp.StatusCode, nil)
-				}
+		case s := <-sends:
+			inFlight--
+			if res, final := t.settle(s, req.Method, idempotent, &heldResp, &heldID, &heldErr, cancels, rec); final {
+				keep(res.resp, res.id)
+				finish(res.id)
 				drainReady(ctx, results, rec)
-				return raceResult{resp: resp, id: result.id, err: err, final: true}
+				return res
 			}
-
-			if err != nil {
-				t.log.Warn("HTTP request failed on idempotent method, falling back",
-					"name", result.name,
-					"method", req.Method,
-					"error", err,
-				)
-				// http.RoundTripper allows resp to be non-nil even when
-				// err is non-nil (the spec only requires resp == nil when
-				// err == nil for the success direction). Drain + close
-				// defensively so we don't leak the body / connection.
-				rec.add(result.id, OutcomeRequestFailed, statusOf(resp), err)
-				drainAndClose(resp)
-				heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", result.name, err))
-				continue
+			if expired {
+				if inFlight == 0 {
+					return timedOut()
+				}
+			} else if inFlight == 0 && len(queue) > 0 {
+				next := queue[0]
+				queue = queue[1:]
+				send(next)
 			}
-
-			if isRetryableStatus(resp.StatusCode) {
-				// The response may be from a blocked intermediary rather than
-				// the origin. Try the next transport. Hold this response in
-				// case nothing else works.
-				t.log.Warn("Retryable status on idempotent method, falling back",
-					"name", result.name,
-					"method", req.Method,
-					"status", resp.StatusCode,
-				)
-				drainAndClose(heldResp)
-				heldResp, heldID = resp, result.id
-				heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: http status %d", result.name, resp.StatusCode))
-				rec.add(result.id, OutcomeRetryStatus, resp.StatusCode, nil)
-				continue
-			}
-
-			// 2xx, 3xx, or any other 4xx on an idempotent method: that 4xx is
-			// the server's verdict on the request itself, retry won't help.
-			drainAndClose(heldResp)
-			rec.add(result.id, OutcomeWon, resp.StatusCode, nil)
-			drainReady(ctx, results, rec)
-			return raceResult{resp: resp, id: result.id, final: true}
 
 		case <-due:
 			elapsed := time.Since(begin)
 			for _, p := range pending {
 				if !p.started && p.delay > 0 && p.delay <= elapsed {
+					p.late = true
 					start(p, "delay elapsed")
 				}
 			}
 
-		case <-ctx.Done():
-			if timer != nil {
-				timer.Stop()
+		case <-done:
+			if inFlight == 0 {
+				if timer != nil {
+					timer.Stop()
+				}
+				return timedOut()
 			}
-			return timedOut()
+			expired = true
+		}
+		if timer != nil {
+			timer.Stop()
 		}
 	}
+}
+
+// settle applies the retry policy to one request's outcome. It returns
+// final=true with what the race should return, or holds a retryable response
+// and records the failure so the race goes on.
+func (t *raceTransport) settle(s sent, method string, idempotent bool, heldResp **http.Response, heldID *int, heldErr *error, cancels map[int]context.CancelFunc, rec *raceRecord) (raceResult, bool) {
+	result, resp, err := s.result, s.resp, s.err
+	if !idempotent {
+		// Single-shot: return whatever happened. Retrying on a non-
+		// idempotent method risks replaying side effects.
+		//
+		// Named here too, because this branch returns before the
+		// attribution below and POST is exactly where it matters: the
+		// registration call that motivated naming these errors is a
+		// POST, so without this the one path under investigation was
+		// the one path still returning an unattributed error.
+		if err != nil {
+			rec.add(result.id, OutcomeRequestFailed, statusOf(resp), err)
+			err = fmt.Errorf("transport %s: %w", result.name, err)
+		} else {
+			rec.add(result.id, OutcomeWon, resp.StatusCode, nil)
+		}
+		return raceResult{resp: resp, id: result.id, err: err, final: true}, true
+	}
+
+	if err != nil {
+		t.log.Warn("HTTP request failed on idempotent method, falling back",
+			"name", result.name,
+			"method", method,
+			"error", err,
+		)
+		// http.RoundTripper allows resp to be non-nil even when
+		// err is non-nil (the spec only requires resp == nil when
+		// err == nil for the success direction). Drain + close
+		// defensively so we don't leak the body / connection.
+		rec.add(result.id, OutcomeRequestFailed, statusOf(resp), err)
+		drainAndClose(resp)
+		cancels[result.id]()
+		*heldErr = errors.Join(*heldErr, fmt.Errorf("transport %s: %w", result.name, err))
+		return raceResult{}, false
+	}
+
+	if isRetryableStatus(resp.StatusCode) {
+		// The response may be from a blocked intermediary rather than
+		// the origin. Try the next transport. Hold this response in
+		// case nothing else works.
+		t.log.Warn("Retryable status on idempotent method, falling back",
+			"name", result.name,
+			"method", method,
+			"status", resp.StatusCode,
+		)
+		if *heldResp != nil {
+			drainAndClose(*heldResp)
+			cancels[*heldID]()
+		}
+		*heldResp, *heldID = resp, result.id
+		*heldErr = errors.Join(*heldErr, fmt.Errorf("transport %s: http status %d", result.name, resp.StatusCode))
+		rec.add(result.id, OutcomeRetryStatus, resp.StatusCode, nil)
+		return raceResult{}, false
+	}
+
+	// 2xx, 3xx, or any other 4xx on an idempotent method: that 4xx is
+	// the server's verdict on the request itself, retry won't help.
+	if *heldResp != nil {
+		drainAndClose(*heldResp)
+		cancels[*heldID]()
+		*heldResp, *heldID = nil, -1
+	}
+	rec.add(result.id, OutcomeWon, resp.StatusCode, nil)
+	return raceResult{resp: resp, id: result.id, final: true}, true
+}
+
+// cancelOnClose cancels a request's context once its response body is closed.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
 }
 
 // nextStart returns the earliest start delay among transports still waiting,

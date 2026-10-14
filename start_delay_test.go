@@ -3,7 +3,9 @@ package kindling
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -159,6 +161,98 @@ func TestStartDelay_OnlyDelayedTransportEligible(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Less(t, took, 5*time.Second)
+}
+
+// stallingRT connects at once but never answers, like a fronted request whose
+// packets are dropped after the TLS handshake. It reports when its request's
+// context ends.
+type stallingRT struct {
+	sent      atomic.Bool
+	cancelled chan struct{}
+}
+
+func newStallingRT() *stallingRT { return &stallingRT{cancelled: make(chan struct{})} }
+
+func (s *stallingRT) RoundTrip(req *http.Request) (*http.Response, error) {
+	s.sent.Store(true)
+	<-req.Context().Done()
+	close(s.cancelled)
+	return nil, req.Context().Err()
+}
+
+func (s *stallingRT) connect(context.Context, string) (http.RoundTripper, error) { return s, nil }
+
+// A transport can connect and then hang on the request itself. A replay-safe
+// request must not wait behind it: the late transport sends alongside, wins,
+// and the stalled request is cancelled.
+func TestStartDelay_RescuesStalledRequest(t *testing.T) {
+	t.Parallel()
+	// The body follows the headers after a pause, so it's still in flight
+	// when the race returns.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(100 * time.Millisecond)
+		_, _ = io.WriteString(w, "via soar")
+	}))
+	defer server.Close()
+
+	stalled := newStallingRT()
+	rt := newRaceTransport("test", testLog, func(string) {}, []Transport{
+		&mockTransport{name: "domainfront", newRoundTripper: stalled.connect},
+		&mockTransport{name: "soar", priority: priorityLastResort, startDelay: 50 * time.Millisecond,
+			newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+				return &urlRewritingTransport{target: server.URL}, nil
+			}},
+	})
+	req, err := http.NewRequest(http.MethodGet, "https://origin.example/v1/config", nil)
+	require.NoError(t, err)
+	begin := time.Now()
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	assert.Less(t, time.Since(begin), 5*time.Second, "soar waited behind the stalled request")
+	assert.True(t, stalled.sent.Load())
+
+	// The winner's request context must outlive the race, or its body would
+	// be cut off.
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.Equal(t, "via soar", string(body))
+
+	select {
+	case <-stalled.cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stalled request was left running after soar won")
+	}
+}
+
+// A request that isn't replay-safe is still sent exactly once, even when the
+// transport it went to stalls and a late transport connects.
+func TestStartDelay_NonIdempotentStaysSingleShot(t *testing.T) {
+	t.Parallel()
+	stalled := newStallingRT()
+	var soarSent atomic.Bool
+	rt := newRaceTransport("test", testLog, func(string) {}, []Transport{
+		&mockTransport{name: "domainfront", newRoundTripper: stalled.connect},
+		&mockTransport{name: "soar", priority: priorityLastResort, startDelay: 20 * time.Millisecond,
+			newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+				return roundTripFunc(func(*http.Request) (*http.Response, error) {
+					soarSent.Store(true)
+					return statusRT(http.StatusOK).RoundTrip(nil)
+				}), nil
+			}},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://origin.example/v1/register", nil)
+	require.NoError(t, err)
+	resp, err := rt.RoundTrip(req)
+	if resp != nil {
+		resp.Body.Close()
+	}
+	assert.Error(t, err, "the POST's only attempt stalled until the caller gave up")
+	assert.False(t, soarSent.Load(), "a POST was sent a second time")
 }
 
 // stubDelayedDNSTT is a DNSTunnel that sets its own start delay.

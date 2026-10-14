@@ -318,7 +318,7 @@ footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; g
     <div class="steps">
       <div class="step"><h3>Filter</h3><p>Transports that can't carry this request are skipped: a body over a transport's size cap, or a streaming request on a transport that can't stream.</p></div>
       <div class="step"><h3>Race a tier</h3><p>Every transport in the first tier starts connecting at once. Transports pre-connect, so the race measures real reachability on this network.</p></div>
-      <div class="step"><h3>Send once</h3><p>The first transport to connect gets the request. Requests are sent one at a time, never in parallel, so a POST can't hit the server twice.</p></div>
+      <div class="step"><h3>Send once</h3><p>The first transport to connect gets the request. Requests are sent one at a time, so a POST can't hit the server twice. The one exception is a replay-safe request and a transport that joined late: it sends alongside a request that's hanging rather than behind it.</p></div>
       <div class="step"><h3>Fall back</h3><p>If the whole tier fails, the next tier starts at once. A transport with a start delay also joins once its delay passes, so a tier that hangs instead of failing doesn't hold it up. That's how Soar stays out of the way on networks where faster routes work, and still arrives where they don't.</p></div>
     </div>
     <div class="retry">
