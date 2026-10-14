@@ -239,12 +239,21 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 	var queue []connectResult
 	// hedging is set once a transport joins on its delay; see above.
 	hedging := false
+	// hedged marks requests sent under hedging. serial counts those in flight
+	// that weren't, which is at most one.
+	hedged := map[int]bool{}
+	serial := 0
 	send := func(result connectResult) {
 		t.log.Debug("Transport connected, sending request", "name", result.name, "method", req.Method)
 		sendCtx, cancel := context.WithCancel(req.Context())
 		cancels[result.id] = cancel
 		clone := cloneRequest(req.WithContext(sendCtx), t.appName, result.name, bodyBytes)
 		inFlight++
+		if idempotent && hedging {
+			hedged[result.id] = true
+		} else {
+			serial++
+		}
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -343,8 +352,12 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 	}
 
 	// expired is set when the budget runs out with a request in flight. As
-	// before requests went out concurrently, a request already sent is
-	// allowed to finish, but nothing new starts or sends.
+	// before requests went out concurrently, a request sent the serial way is
+	// allowed to finish, but nothing new starts or sends. Hedged requests get
+	// no such allowance: they're replay-safe, and waiting on one that hangs
+	// would keep a held response from the caller indefinitely. They can still
+	// win while the serial request finishes; otherwise they're cancelled when
+	// the race returns.
 	expired := false
 	for {
 		if !expired && running == 0 && inFlight == 0 && len(queue) == 0 {
@@ -408,6 +421,9 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 
 		case s := <-sends:
 			inFlight--
+			if !hedged[s.result.id] {
+				serial--
+			}
 			if res, final := t.settle(s, req.Method, idempotent, &heldResp, &heldID, &heldErr, cancels, rec); final {
 				keep(res.resp, res.id)
 				finish(res.id)
@@ -415,7 +431,7 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 				return res
 			}
 			if expired {
-				if inFlight == 0 {
+				if serial == 0 {
 					return timedOut()
 				}
 			} else if inFlight == 0 && len(queue) > 0 {
@@ -440,7 +456,7 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 			}
 
 		case <-done:
-			if inFlight == 0 {
+			if serial == 0 {
 				if timer != nil {
 					timer.Stop()
 				}

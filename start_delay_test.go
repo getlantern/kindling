@@ -398,6 +398,46 @@ func TestRaceTransport_LateLoserBodyClosed(t *testing.T) {
 	}
 }
 
+// When the budget runs out, a hedged request that hangs, even one that ignores
+// its context, must not keep a held response from the caller.
+func TestStartDelay_ExpiryDoesNotWaitOnHungHedge(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	defer close(release)
+	rt := newRaceTransport("test", testLog, func(string) {}, []Transport{
+		&mockTransport{name: "smart", newRoundTripper: returns(http.StatusServiceUnavailable)},
+		&mockTransport{name: "domainfront", newRoundTripper: hangs},
+		&mockTransport{name: "soar", priority: priorityLastResort, startDelay: 20 * time.Millisecond,
+			newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+				return roundTripFunc(func(*http.Request) (*http.Response, error) {
+					<-release
+					return nil, errors.New("released")
+				}), nil
+			}},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://origin.example/v1/config", nil)
+	require.NoError(t, err)
+	type out struct {
+		resp *http.Response
+		err  error
+	}
+	got := make(chan out, 1)
+	go func() {
+		resp, err := rt.RoundTrip(req)
+		got <- out{resp, err}
+	}()
+	select {
+	case o := <-got:
+		require.NoError(t, o.err)
+		defer o.resp.Body.Close()
+		assert.Equal(t, http.StatusServiceUnavailable, o.resp.StatusCode, "the held 503 should come back")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the race waited on a hung hedged request past its budget")
+	}
+}
+
 // stubDelayedDNSTT is a DNSTunnel that sets its own start delay.
 type stubDelayedDNSTT struct {
 	stubDNSTT
