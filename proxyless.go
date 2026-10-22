@@ -193,3 +193,12 @@ func (h *hostRewriter) RoundTrip(req *http.Request) (*http.Response, error) {
 	r.Host = ""
 	return h.next.RoundTrip(r)
 }
+
+// Close closes next if it can be closed, so the race can release a rewritten
+// transport it doesn't use.
+func (h *hostRewriter) Close() error {
+	if c, ok := h.next.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
+}
