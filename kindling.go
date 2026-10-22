@@ -542,9 +542,13 @@ func newSmartDialer(
 
 // preconnectedTransport creates an http.Transport that uses an already-established
 // connection. Intended for single-request use within the race transport.
-func preconnectedTransport(conn net.Conn) *http.Transport {
-	return &http.Transport{
+func preconnectedTransport(conn net.Conn) *preconnected {
+	p := &preconnected{conn: conn}
+	p.Transport = &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			p.mu.Lock()
+			p.dialed = true
+			p.mu.Unlock()
 			return conn, nil
 		},
 		ForceAttemptHTTP2:     true,
@@ -553,6 +557,30 @@ func preconnectedTransport(conn net.Conn) *http.Transport {
 		TLSHandshakeTimeout:   20 * time.Second,
 		ExpectContinueTimeout: 4 * time.Second,
 	}
+	return p
+}
+
+// preconnected is the transport preconnectedTransport returns.
+type preconnected struct {
+	*http.Transport
+	conn   net.Conn
+	mu     sync.Mutex
+	dialed bool
+}
+
+// Close closes the connection if no request has dialed it, as when a race
+// discards this transport unused, and closes idle connections. A connection a
+// request dialed belongs to the transport, so one in use is left alone.
+func (p *preconnected) Close() error {
+	p.mu.Lock()
+	dialed := p.dialed
+	p.dialed = true
+	p.mu.Unlock()
+	p.CloseIdleConnections()
+	if !dialed {
+		return p.conn.Close()
+	}
+	return nil
 }
 
 // NewSmartHTTPTransport creates an http.Transport using the Outline SDK smart

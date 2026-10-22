@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -671,4 +672,57 @@ func TestReplaceTransport(t *testing.T) {
 			t.Error("ReplaceTransport() should fail with no transports")
 		}
 	})
+}
+
+// A race discards the smart transport's round tripper when another transport
+// wins, and Close must release the connection the smart dialer made for it.
+func TestPreconnectedTransportCloseReleasesAnUnusedConn(t *testing.T) {
+	t.Parallel()
+
+	ours, theirs := net.Pipe()
+	defer theirs.Close()
+	rt := &hostRewriter{host: "example.com", next: preconnectedTransport(ours)}
+	if err := rt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	theirs.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := theirs.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("read from the peer after Close: %v, want io.EOF", err)
+	}
+}
+
+func TestPreconnectedTransportCloseLeavesARequestAlone(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("first half "))
+		w.(http.Flusher).Flush()
+		<-release
+		w.Write([]byte("second half"))
+	}))
+	defer server.Close()
+	conn, err := net.Dial("tcp", server.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := preconnectedTransport(conn)
+	req, err := http.NewRequest("GET", server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if err := rt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || string(body) != "first half second half" {
+		t.Fatalf("body after Close = %q, %v", body, err)
+	}
 }
