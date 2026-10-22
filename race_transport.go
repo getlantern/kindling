@@ -237,6 +237,38 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 	cancels := map[int]context.CancelFunc{}
 	inFlight := 0
 	var queue []connectResult
+	// A connection the race never sends through may hold a pre-dialed conn or
+	// tunnel stream, so release it: the queued ones now, and any still
+	// connecting once they report.
+	defer func() {
+		for _, r := range queue {
+			discard(r.rt)
+		}
+		if running > 0 {
+			go func(n int) {
+				for range n {
+					discard((<-results).rt)
+				}
+			}(running)
+		}
+	}()
+	// drainReady records connection failures that already arrived when the
+	// race ends, so they aren't reported as unfinished. It doesn't wait for
+	// the rest.
+	drainReady := func() {
+		for {
+			select {
+			case r := <-results:
+				running--
+				if r.err != nil {
+					rec.connectFailed(ctx, r.id, r.err, r.at)
+				}
+				discard(r.rt)
+			default:
+				return
+			}
+		}
+	}
 	// hedging is set once a transport joins on its delay; see above.
 	hedging := false
 	send := func(result connectResult) {
@@ -320,10 +352,12 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 		for {
 			select {
 			case r := <-results:
+				running--
 				if r.err != nil {
 					heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", r.name, r.err))
 					rec.connectFailed(ctx, r.id, r.err, r.at)
 				}
+				discard(r.rt)
 			case s := <-sends:
 				// A request that answered just as the budget ran out still
 				// counts: its response may be the usable one.
@@ -331,7 +365,7 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 				if res, final := t.settle(s, req.Method, idempotent, &heldResp, &heldID, &heldErr, cancels, rec); final {
 					keep(res.resp, res.id)
 					finish(res.id)
-					drainReady(ctx, results, rec)
+					drainReady()
 					return res
 				}
 			default:
@@ -414,7 +448,7 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 			if res, final := t.settle(s, req.Method, idempotent, &heldResp, &heldID, &heldErr, cancels, rec); final {
 				keep(res.resp, res.id)
 				finish(res.id)
-				drainReady(ctx, results, rec)
+				drainReady()
 				return res
 			}
 			if inFlight == 0 && len(queue) > 0 {
@@ -553,21 +587,12 @@ func nextStart(pending []*pendingTransport) (time.Duration, bool) {
 	return next, found
 }
 
-// drainReady records connection failures that already arrived when a tier ends
-// early, so they aren't reported as unfinished. It doesn't wait for the rest.
-func drainReady(ctx context.Context, results <-chan connectResult, rec *raceRecord) {
-	if rec == nil {
-		return
-	}
-	for {
-		select {
-		case r := <-results:
-			if r.err != nil {
-				rec.connectFailed(ctx, r.id, r.err, r.at)
-			}
-		default:
-			return
-		}
+// discard releases a connected round tripper the race won't send through.
+// Some hold a pre-dialed connection (domain fronting) or tunnel stream (Soar)
+// that only Close gives back.
+func discard(rt http.RoundTripper) {
+	if c, ok := rt.(io.Closer); ok {
+		_ = c.Close()
 	}
 }
 
@@ -630,6 +655,7 @@ func (t *raceTransport) connect(ctx context.Context, tr Transport, id int, addr 
 		return
 	}
 	if ctx.Err() != nil {
+		discard(rt)
 		results <- connectResult{name: tr.Name(), id: id, at: time.Now(), err: ctx.Err()}
 		return
 	}

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1468,3 +1469,111 @@ func TestRaceTransport_NamesTransportOnNonIdempotentFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "only-one",
 		"a POST failure must still say which transport produced it")
 }
+
+// closingRoundTripper reports when the race closes it.
+type closingRoundTripper struct {
+	http.RoundTripper
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newClosingRoundTripper(next http.RoundTripper) *closingRoundTripper {
+	return &closingRoundTripper{RoundTripper: next, closed: make(chan struct{})}
+}
+
+func (c *closingRoundTripper) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return nil
+}
+
+func waitClosed(t *testing.T, rt *closingRoundTripper) {
+	t.Helper()
+	select {
+	case <-rt.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the race never closed a round tripper it didn't use")
+	}
+}
+
+// A connection that lands after the race is decided can hold a pre-dialed
+// conn or tunnel stream (Soar's sessions have a fixed number), so the race
+// must close it rather than drop it.
+func TestRaceTransport_ClosesConnectionThatArrivesAfterTheWin(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer server.Close()
+
+	release := make(chan struct{})
+	late := newClosingRoundTripper(&urlRewritingTransport{target: server.URL})
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			redirectTransport("fast", server.URL),
+			&mockTransport{
+				name: "late",
+				newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+					<-release
+					return late, nil
+				},
+			},
+		},
+	)
+
+	req, err := http.NewRequest("GET", server.URL, nil)
+	require.NoError(t, err)
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	close(release)
+	waitClosed(t, late)
+}
+
+// A non-idempotent request goes out on one connection at a time, so one that
+// connects meanwhile waits in the queue. When the request in flight wins, the
+// queued one is never used and must be closed.
+func TestRaceTransport_ClosesQueuedConnection(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer server.Close()
+
+	// "second" connects only once "first" is sending, and "first" answers
+	// only once "second" has connected.
+	sending, queuedUp := make(chan struct{}), make(chan struct{})
+	queued := newClosingRoundTripper(&urlRewritingTransport{target: server.URL})
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			&mockTransport{
+				name: "first",
+				newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+					return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+						close(sending)
+						<-queuedUp
+						return (&urlRewritingTransport{target: server.URL}).RoundTrip(req)
+					}), nil
+				},
+			},
+			&mockTransport{
+				name: "second",
+				newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+					defer close(queuedUp)
+					<-sending
+					return queued, nil
+				},
+			},
+		},
+	)
+
+	req, err := http.NewRequest("POST", server.URL, nil)
+	require.NoError(t, err)
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	waitClosed(t, queued)
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
