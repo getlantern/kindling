@@ -122,15 +122,22 @@ func (r *raceRecord) connectFailed(ctx context.Context, id int, err error, at ti
 }
 
 // requestFailed records a failed request, as canceled if the caller ending
-// the request caused it.
-func (r *raceRecord) requestFailed(id int, status int, err error) {
+// the request caused it (see endedBy).
+func (r *raceRecord) requestFailed(id int, status int, err error, canceled bool) {
 	o := OutcomeRequestFailed
-	if r != nil {
-		if cause := r.caller.Err(); cause != nil && errors.Is(err, cause) {
-			o = OutcomeCanceled
-		}
+	if canceled {
+		o = OutcomeCanceled
 	}
 	r.add(id, o, status, err)
+}
+
+// endedBy reports whether err is ctx ending: its error, or the cause it was
+// cancelled with, which transports may return instead.
+func endedBy(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() == nil {
+		return false
+	}
+	return errors.Is(err, ctx.Err()) || errors.Is(err, context.Cause(ctx))
 }
 
 // won marks the response from race position id as the one returned, upgrading

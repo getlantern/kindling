@@ -179,6 +179,9 @@ type sent struct {
 	result connectResult
 	resp   *http.Response
 	err    error
+	// canceled is whether err came from the caller ending the request,
+	// judged when the request returned rather than when the race gets to it.
+	canceled bool
 }
 
 // race connects the eligible transports and applies the method-aware retry
@@ -286,7 +289,7 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 				}
 			}()
 			resp, err := result.rt.RoundTrip(clone)
-			sends <- sent{result: result, resp: resp, err: err}
+			sends <- sent{result: result, resp: resp, err: err, canceled: endedBy(req.Context(), err)}
 		}()
 	}
 	// finish cancels every request but keep's, and closes the responses of
@@ -499,7 +502,7 @@ func (t *raceTransport) settle(s sent, method string, idempotent bool, heldResp 
 		// POST, so without this the one path under investigation was
 		// the one path still returning an unattributed error.
 		if err != nil {
-			rec.requestFailed(result.id, statusOf(resp), err)
+			rec.requestFailed(result.id, statusOf(resp), err, s.canceled)
 			err = fmt.Errorf("transport %s: %w", result.name, err)
 		} else {
 			rec.add(result.id, OutcomeWon, resp.StatusCode, nil)
@@ -517,7 +520,7 @@ func (t *raceTransport) settle(s sent, method string, idempotent bool, heldResp 
 		// err is non-nil (the spec only requires resp == nil when
 		// err == nil for the success direction). Drain + close
 		// defensively so we don't leak the body / connection.
-		rec.requestFailed(result.id, statusOf(resp), err)
+		rec.requestFailed(result.id, statusOf(resp), err, s.canceled)
 		cancels[result.id]()
 		drainAndClose(resp)
 		*heldErr = errors.Join(*heldErr, fmt.Errorf("transport %s: %w", result.name, err))

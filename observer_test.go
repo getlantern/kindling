@@ -303,8 +303,52 @@ func TestRaceObserver_FailureBeforeCancelIsAFailure(t *testing.T) {
 	cancel()
 	rec := newRaceRecord(ctx)
 	rec.racing([]Transport{&mockTransport{name: "smart"}})
-	rec.requestFailed(0, 0, errors.New("connection reset"))
+	rec.requestFailed(0, 0, errors.New("connection reset"), false)
 	race := rec.finish()
 	assert.False(t, race.Canceled)
 	assert.Equal(t, OutcomeRequestFailed, byTransport(race)["smart"].Outcome)
+}
+
+// A caller can cancel with its own cause, which transports may return in
+// place of context.Canceled.
+func TestRaceObserver_CallerCancelWithCause(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	stop := errors.New("refresh superseded this fetch")
+	sending := make(chan struct{})
+	go func() {
+		<-sending
+		cancel(stop)
+	}()
+	race, err := observeWithContext(t, ctx, http.MethodPost,
+		&mockTransport{name: "smart", newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+			return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				close(sending)
+				<-req.Context().Done()
+				return nil, context.Cause(req.Context())
+			}), nil
+		}},
+	)
+	// The race may see its own context end first and return that instead.
+	require.Error(t, err)
+	assert.True(t, race.Canceled)
+	assert.Equal(t, OutcomeCanceled, byTransport(race)["smart"].Outcome)
+}
+
+// Whether a request was canceled is judged when it returns: a transport's own
+// timeout before the caller's deadline is a failure, even if the caller's
+// deadline has passed by the time the race settles it.
+func TestEndedBy(t *testing.T) {
+	live := context.Background()
+	assert.False(t, endedBy(live, context.DeadlineExceeded), "a transport's own timeout")
+
+	ended, cancel := context.WithCancel(live)
+	cancel()
+	assert.True(t, endedBy(ended, fmt.Errorf("send: %w", context.Canceled)))
+	assert.False(t, endedBy(ended, errors.New("connection reset")))
+	assert.False(t, endedBy(ended, nil))
+
+	stop := errors.New("superseded")
+	withCause, cancelCause := context.WithCancelCause(live)
+	cancelCause(stop)
+	assert.True(t, endedBy(withCause, fmt.Errorf("send: %w", stop)))
 }
