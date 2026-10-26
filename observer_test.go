@@ -210,8 +210,8 @@ func TestRaceObserver_BudgetCutoffIsUnfinished(t *testing.T) {
 	cancel()
 	rec := newRaceRecord()
 	rec.racing([]Transport{&mockTransport{name: "cutoff"}, &mockTransport{name: "blocked"}})
-	rec.connectFailed(ctx, 0, fmt.Errorf("dial: %w", ctx.Err()), time.Now())
-	rec.connectFailed(ctx, 1, errors.New("connection refused"), time.Now())
+	rec.connectFailed(0, fmt.Errorf("dial: %w", ctx.Err()), time.Now(), endedBy(ctx, fmt.Errorf("dial: %w", ctx.Err())))
+	rec.connectFailed(1, errors.New("connection refused"), time.Now(), endedBy(ctx, errors.New("connection refused")))
 	a := byTransport(rec.finish())
 	assert.Equal(t, OutcomeUnfinished, a["cutoff"].Outcome)
 	assert.Equal(t, OutcomeConnectFailed, a["blocked"].Outcome)
@@ -220,4 +220,234 @@ func TestRaceObserver_BudgetCutoffIsUnfinished(t *testing.T) {
 func TestWithTransport_RejectsEmptyName(t *testing.T) {
 	_, err := NewKindling("test", WithTransport(&mockTransport{name: ""}))
 	assert.Error(t, err)
+}
+
+// observeWithContext runs one request with ctx and returns what the observer saw.
+func observeWithContext(t *testing.T, ctx context.Context, method string, transports ...Transport) (Race, error) {
+	t.Helper()
+	var got []Race
+	rt := newRaceTransport("test", testLog, func(string) {}, transports)
+	rt.observer = func(_ context.Context, r Race) { got = append(got, r) }
+	req, err := http.NewRequestWithContext(ctx, method, "https://origin.example/v1/config", nil)
+	require.NoError(t, err)
+	resp, err := rt.RoundTrip(req)
+	if resp != nil {
+		resp.Body.Close()
+	}
+	require.Len(t, got, 1, "observer runs once per request")
+	return got[0], err
+}
+
+// hangsUntilCanceled connects only once ctx ends, and then fails with its error.
+func hangsUntilCanceled(ctx context.Context, _ string) (http.RoundTripper, error) {
+	<-ctx.Done()
+	return nil, fmt.Errorf("dial: %w", ctx.Err())
+}
+
+// A caller that gives up while every transport is still connecting says
+// nothing about the transports, so the race is canceled, not failed.
+func TestRaceObserver_CallerCancelWhileConnecting(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+	race, err := observeWithContext(t, ctx, http.MethodGet,
+		&mockTransport{name: "smart", newRoundTripper: hangsUntilCanceled},
+		&mockTransport{name: "soar", startDelay: time.Hour, newRoundTripper: hangsUntilCanceled},
+	)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.True(t, race.Canceled)
+	assert.Empty(t, race.Winner)
+	a := byTransport(race)
+	assert.Equal(t, OutcomeCanceled, a["smart"].Outcome)
+	assert.NotContains(t, a, "soar", "a transport that never joined stays out")
+}
+
+// A POST is sent once, so the request the caller cancels is the race's
+// final answer. It failed because of the caller, not the transport.
+func TestRaceObserver_CallerCancelDuringRequest(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	sending := make(chan struct{})
+	go func() {
+		<-sending
+		cancel()
+	}()
+	race, err := observeWithContext(t, ctx, http.MethodPost,
+		&mockTransport{name: "smart", newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+			return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				close(sending)
+				<-req.Context().Done()
+				return nil, req.Context().Err()
+			}), nil
+		}},
+	)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.True(t, race.Canceled)
+	assert.Equal(t, OutcomeCanceled, byTransport(race)["smart"].Outcome)
+}
+
+// The caller's own deadline ends the request just as cancelling does.
+func TestRaceObserver_CallerDeadlineIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	race, err := observeWithContext(t, ctx, http.MethodGet,
+		&mockTransport{name: "smart", newRoundTripper: hangsUntilCanceled},
+	)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.True(t, race.Canceled)
+	assert.Equal(t, OutcomeCanceled, byTransport(race)["smart"].Outcome)
+}
+
+// A request that failed on its own isn't canceled, even if the caller's
+// context ends before the race reports.
+func TestRaceObserver_FailureBeforeCancelIsAFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rec := newRaceRecord()
+	rec.raceEnded(ctx)
+	rec.racing([]Transport{&mockTransport{name: "smart"}})
+	rec.requestFailed(0, 0, errors.New("connection reset"), false)
+	race := rec.finish()
+	assert.False(t, race.Canceled)
+	assert.Equal(t, OutcomeRequestFailed, byTransport(race)["smart"].Outcome)
+}
+
+// A caller can cancel with its own cause, which transports may return in
+// place of context.Canceled.
+func TestRaceObserver_CallerCancelWithCause(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	stop := errors.New("refresh superseded this fetch")
+	sending := make(chan struct{})
+	go func() {
+		<-sending
+		cancel(stop)
+	}()
+	race, err := observeWithContext(t, ctx, http.MethodPost,
+		&mockTransport{name: "smart", newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+			return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				close(sending)
+				<-req.Context().Done()
+				return nil, context.Cause(req.Context())
+			}), nil
+		}},
+	)
+	// The race may see its own context end first and return that instead.
+	require.Error(t, err)
+	assert.True(t, race.Canceled)
+	assert.Equal(t, OutcomeCanceled, byTransport(race)["smart"].Outcome)
+}
+
+// Whether a request was canceled is judged when it returns: a transport's own
+// timeout before the caller's deadline is a failure, even if the caller's
+// deadline has passed by the time the race settles it.
+func TestEndedBy(t *testing.T) {
+	live := context.Background()
+	assert.False(t, endedBy(live, context.DeadlineExceeded), "a transport's own timeout")
+
+	ended, cancel := context.WithCancel(live)
+	cancel()
+	assert.True(t, endedBy(ended, fmt.Errorf("send: %w", context.Canceled)))
+	assert.False(t, endedBy(ended, errors.New("connection reset")))
+	assert.False(t, endedBy(ended, nil))
+
+	stop := errors.New("superseded")
+	withCause, cancelCause := context.WithCancelCause(live)
+	cancelCause(stop)
+	assert.True(t, endedBy(withCause, fmt.Errorf("send: %w", stop)))
+}
+
+// The budget ending the race decides the outcome, even if the caller gives up
+// before the race is reported.
+func TestRaceObserver_BudgetEndBeatsLaterCancel(t *testing.T) {
+	caller, cancel := context.WithCancel(context.Background())
+	budget, stop := context.WithTimeoutCause(caller, time.Nanosecond, errBudgetSpent)
+	defer stop()
+	<-budget.Done()
+	cancel()
+
+	rec := newRaceRecord()
+	rec.racing([]Transport{&mockTransport{name: "smart"}})
+	rec.raceEnded(budget)
+	race := rec.finish()
+	assert.False(t, race.Canceled)
+	assert.Equal(t, OutcomeUnfinished, byTransport(race)["smart"].Outcome)
+
+	caller, cancel = context.WithCancel(context.Background())
+	budget, stop = context.WithTimeoutCause(caller, time.Hour, errBudgetSpent)
+	defer stop()
+	cancel()
+	rec = newRaceRecord()
+	rec.racing([]Transport{&mockTransport{name: "smart"}})
+	rec.raceEnded(budget)
+	race = rec.finish()
+	assert.True(t, race.Canceled, "the caller ended it first")
+	assert.Equal(t, OutcomeCanceled, byTransport(race)["smart"].Outcome)
+}
+
+// Transports may fail with the context's cause rather than its error. Either
+// way the attempt was cut off, not failed: unfinished when the budget ran out,
+// canceled when the caller ended the request.
+func TestRaceObserver_ConnectFailureWithCause(t *testing.T) {
+	budget, stop := context.WithTimeoutCause(context.Background(), time.Nanosecond, errBudgetSpent)
+	defer stop()
+	<-budget.Done()
+	rec := newRaceRecord()
+	rec.racing([]Transport{&mockTransport{name: "smart"}})
+	rec.connectFailed(0, fmt.Errorf("dial: %w", context.Cause(budget)), time.Now(), endedBy(budget, fmt.Errorf("dial: %w", context.Cause(budget))))
+	rec.raceEnded(budget)
+	assert.Equal(t, OutcomeUnfinished, byTransport(rec.finish())["smart"].Outcome)
+
+	superseded := errors.New("superseded")
+	caller, cancel := context.WithCancelCause(context.Background())
+	budget, stop = context.WithTimeoutCause(caller, time.Hour, errBudgetSpent)
+	defer stop()
+	cancel(superseded)
+	rec = newRaceRecord()
+	rec.racing([]Transport{&mockTransport{name: "smart"}})
+	rec.connectFailed(0, fmt.Errorf("dial: %w", superseded), time.Now(), endedBy(budget, fmt.Errorf("dial: %w", superseded)))
+	rec.raceEnded(budget)
+	race := rec.finish()
+	assert.True(t, race.Canceled)
+	assert.Equal(t, OutcomeCanceled, byTransport(race)["smart"].Outcome)
+}
+
+// A request the caller cancels after the budget ran out was cut off by the
+// budget, even if its result reaches the race before the timeout does.
+func TestBudgetSpent(t *testing.T) {
+	caller, cancel := context.WithCancel(context.Background())
+	budget, stop := context.WithTimeoutCause(caller, time.Nanosecond, errBudgetSpent)
+	defer stop()
+	<-budget.Done()
+	cancel()
+	assert.True(t, endedBy(caller, context.Canceled))
+	assert.True(t, budgetSpent(budget), "the budget ended it first")
+
+	caller, cancel = context.WithCancel(context.Background())
+	budget, stop = context.WithTimeoutCause(caller, time.Hour, errBudgetSpent)
+	defer stop()
+	cancel()
+	assert.False(t, budgetSpent(budget), "the caller ended it first")
+	assert.False(t, budgetSpent(context.Background()))
+}
+
+// Whether a connection failure was the context ending is judged when the
+// attempt returns. A transport's own timeout, returned while the request was
+// live, stays a failure even if the caller gives up before the race reads it.
+func TestRaceObserver_ConnectFailureJudgedOnReturn(t *testing.T) {
+	caller, cancel := context.WithCancel(context.Background())
+	err := fmt.Errorf("dial: %w", context.DeadlineExceeded)
+	cutOff := endedBy(caller, err) // when the attempt returned
+	cancel()
+
+	rec := newRaceRecord()
+	rec.racing([]Transport{&mockTransport{name: "smart"}})
+	rec.connectFailed(0, err, time.Now(), cutOff)
+	rec.raceEnded(caller)
+	race := rec.finish()
+	assert.False(t, race.Canceled)
+	assert.Equal(t, OutcomeConnectFailed, byTransport(race)["smart"].Outcome)
+}
+
+// A transport may fail with the budget's cause instead of its error, and that
+// must still read as a timeout.
+func TestErrBudgetSpentIsATimeout(t *testing.T) {
+	assert.ErrorIs(t, errBudgetSpent, context.DeadlineExceeded)
 }
