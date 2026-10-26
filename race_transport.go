@@ -290,7 +290,7 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 				}
 			}()
 			resp, err := result.rt.RoundTrip(clone)
-			sends <- sent{result: result, resp: resp, err: err, canceled: endedBy(req.Context(), err)}
+			sends <- sent{result: result, resp: resp, err: err, canceled: endedBy(req.Context(), err) && !budgetSpent(ctx)}
 		}()
 	}
 	// finish cancels every request but keep's, and closes the responses of

@@ -381,3 +381,49 @@ func TestRaceObserver_BudgetEndBeatsLaterCancel(t *testing.T) {
 	assert.True(t, race.Canceled, "the caller ended it first")
 	assert.Equal(t, OutcomeCanceled, byTransport(race)["smart"].Outcome)
 }
+
+// Transports may fail with the context's cause rather than its error. Either
+// way the attempt was cut off, not failed: unfinished when the budget ran out,
+// canceled when the caller ended the request.
+func TestRaceObserver_ConnectFailureWithCause(t *testing.T) {
+	budget, stop := context.WithTimeoutCause(context.Background(), time.Nanosecond, errBudgetSpent)
+	defer stop()
+	<-budget.Done()
+	rec := newRaceRecord()
+	rec.racing([]Transport{&mockTransport{name: "smart"}})
+	rec.connectFailed(budget, 0, fmt.Errorf("dial: %w", context.Cause(budget)), time.Now())
+	rec.raceEnded(budget)
+	assert.Equal(t, OutcomeUnfinished, byTransport(rec.finish())["smart"].Outcome)
+
+	superseded := errors.New("superseded")
+	caller, cancel := context.WithCancelCause(context.Background())
+	budget, stop = context.WithTimeoutCause(caller, time.Hour, errBudgetSpent)
+	defer stop()
+	cancel(superseded)
+	rec = newRaceRecord()
+	rec.racing([]Transport{&mockTransport{name: "smart"}})
+	rec.connectFailed(budget, 0, fmt.Errorf("dial: %w", superseded), time.Now())
+	rec.raceEnded(budget)
+	race := rec.finish()
+	assert.True(t, race.Canceled)
+	assert.Equal(t, OutcomeCanceled, byTransport(race)["smart"].Outcome)
+}
+
+// A request the caller cancels after the budget ran out was cut off by the
+// budget, even if its result reaches the race before the timeout does.
+func TestBudgetSpent(t *testing.T) {
+	caller, cancel := context.WithCancel(context.Background())
+	budget, stop := context.WithTimeoutCause(caller, time.Nanosecond, errBudgetSpent)
+	defer stop()
+	<-budget.Done()
+	cancel()
+	assert.True(t, endedBy(caller, context.Canceled))
+	assert.True(t, budgetSpent(budget), "the budget ended it first")
+
+	caller, cancel = context.WithCancel(context.Background())
+	budget, stop = context.WithTimeoutCause(caller, time.Hour, errBudgetSpent)
+	defer stop()
+	cancel()
+	assert.False(t, budgetSpent(budget), "the caller ended it first")
+	assert.False(t, budgetSpent(context.Background()))
+}

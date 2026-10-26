@@ -93,7 +93,13 @@ func (r *raceRecord) raceEnded(ctx context.Context) {
 	if r == nil || ctx.Err() == nil {
 		return
 	}
-	r.callerEnded = !errors.Is(context.Cause(ctx), errBudgetSpent)
+	r.callerEnded = !budgetSpent(ctx)
+}
+
+// budgetSpent reports whether kindling's time budget ended ctx, the race's
+// context, before anything else did.
+func budgetSpent(ctx context.Context) bool {
+	return errors.Is(context.Cause(ctx), errBudgetSpent)
 }
 
 // racing registers transports joining the race and returns the race position
@@ -130,7 +136,7 @@ func (r *raceRecord) addAt(id int, o Outcome, status int, err error, at time.Tim
 // connectFailed records a connection failure, unless the request's own budget
 // ending caused it: that attempt was cut off, so it stays unfinished.
 func (r *raceRecord) connectFailed(ctx context.Context, id int, err error, at time.Time) {
-	if cause := ctx.Err(); cause != nil && errors.Is(err, cause) {
+	if endedBy(ctx, err) {
 		return
 	}
 	r.addAt(id, OutcomeConnectFailed, 0, err, at)
