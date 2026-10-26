@@ -48,8 +48,8 @@ github.com/envoyproxy/go-control-plane v0.9.1-0.20191026205805-5f8ba28d4473/go.m
 github.com/envoyproxy/protoc-gen-validate v0.1.0/go.mod h1:iSmxcyjqTsJpI2R4NaDN7+kN2VEUnK/pcBlmesArF7c=
 github.com/getlantern/amp v0.0.0-20260606002220-a8629924577c h1:ZzxuhIWO295y4eE6wPYUq8Smntlgg+y39L5OOyMJY+k=
 github.com/getlantern/amp v0.0.0-20260606002220-a8629924577c/go.mod h1:b5teAOFT+vpBqc2CHoz74QTEM15iOv1PLdQogwXcfrM=
-github.com/getlantern/domainfront v0.0.0-20260915170633-44b0ef55097e h1:KZFGQ0zATwEaHs1igme53JOzjfOIA3LMXjJaG7p1l9Q=
-github.com/getlantern/domainfront v0.0.0-20260915170633-44b0ef55097e/go.mod h1:eOcE66YcVTxLiASh77rngh83B9PQtm4gSr7ZxWnaxZU=
+github.com/getlantern/domainfront v0.0.0-20261026202828-9727b2f2a34a h1:n3Qdhq+xAsLbry6PGhmmZHa6+mQ6m3NG14R5/4/ZF9E=
+github.com/getlantern/domainfront v0.0.0-20261026202828-9727b2f2a34a/go.mod h1:eOcE66YcVTxLiASh77rngh83B9PQtm4gSr7ZxWnaxZU=
 github.com/getlantern/keepcurrent v0.0.0-20260304213122-017d542145ae h1:NMq3K7h3N/usgEtUMQs8WBzvhKKOfBvHo+18pXgtpds=
 github.com/getlantern/keepcurrent v0.0.0-20260304213122-017d542145ae/go.mod h1:ag5g9aWUw2FJcX5RVRpJ9EBQBy5yJuy2WXDouIn/m4w=
 github.com/go-gl/glfw v0.0.0-20190409004039-e6da0acd62b1/go.mod h1:vR7hzQXu2zJy9AVAgeJqvqgH9Q5CA+iKCZ2gyEVpxRU=
