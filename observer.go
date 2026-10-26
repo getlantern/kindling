@@ -3,6 +3,7 @@ package kindling
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -23,6 +24,10 @@ const (
 	// ended: still connecting, connected but never chosen to send, or cut off
 	// by the time budget.
 	OutcomeUnfinished Outcome = "unfinished"
+	// OutcomeCanceled means the caller ended the request, by cancelling its
+	// context or letting its deadline pass, before this transport produced an
+	// outcome or while it was failing because of that.
+	OutcomeCanceled Outcome = "canceled"
 )
 
 // Attempt is one transport's part in a request.
@@ -40,7 +45,12 @@ type Attempt struct {
 // Race reports how kindling handled one request.
 type Race struct {
 	// Winner is the transport whose response was returned, or "" if none was.
-	Winner   string
+	Winner string
+	// Canceled reports that the caller ended the request before any response
+	// was returned, cutting off at least one attempt (see OutcomeCanceled).
+	// Such a request says little about the transports, so it shouldn't count
+	// as a failure.
+	Canceled bool
 	Attempts []Attempt
 }
 
@@ -58,6 +68,8 @@ func WithRaceObserver(fn func(ctx context.Context, race Race)) Option {
 // RoundTrip touches it. A nil record, used when nobody observes, records nothing.
 // Attempts are keyed by race position, since transport names needn't be unique.
 type raceRecord struct {
+	// caller is the request's own context, without kindling's time budget.
+	caller   context.Context
 	start    time.Time
 	race     Race
 	names    []string // by race position
@@ -65,8 +77,8 @@ type raceRecord struct {
 	ids      []int    // race position of each entry in race.Attempts
 }
 
-func newRaceRecord() *raceRecord {
-	return &raceRecord{start: time.Now()}
+func newRaceRecord(caller context.Context) *raceRecord {
+	return &raceRecord{caller: caller, start: time.Now()}
 }
 
 // racing registers transports joining the race and returns the race position
@@ -109,6 +121,18 @@ func (r *raceRecord) connectFailed(ctx context.Context, id int, err error, at ti
 	r.addAt(id, OutcomeConnectFailed, 0, err, at)
 }
 
+// requestFailed records a failed request, as canceled if the caller ending
+// the request caused it.
+func (r *raceRecord) requestFailed(id int, status int, err error) {
+	o := OutcomeRequestFailed
+	if r != nil {
+		if cause := r.caller.Err(); cause != nil && errors.Is(err, cause) {
+			o = OutcomeCanceled
+		}
+	}
+	r.add(id, o, status, err)
+}
+
 // won marks the response from race position id as the one returned, upgrading
 // a held fallback.
 func (r *raceRecord) won(id int) {
@@ -124,12 +148,23 @@ func (r *raceRecord) won(id int) {
 	}
 }
 
-// finish adds the transports that never reported and returns the race.
+// finish adds the transports that never reported and returns the race. If
+// the caller ended the request before a response was returned, they were cut
+// off by it and are canceled rather than unfinished.
 func (r *raceRecord) finish() Race {
+	pending := OutcomeUnfinished
+	if r.race.Winner == "" && r.caller.Err() != nil {
+		pending = OutcomeCanceled
+	}
 	for id, done := range r.reported {
 		if !done {
-			r.add(id, OutcomeUnfinished, 0, nil)
+			r.add(id, pending, 0, nil)
 		}
 	}
+	// A race whose transports had all failed before the caller gave up is
+	// still a failure.
+	r.race.Canceled = r.race.Winner == "" && slices.ContainsFunc(r.race.Attempts, func(a Attempt) bool {
+		return a.Outcome == OutcomeCanceled
+	})
 	return r.race
 }

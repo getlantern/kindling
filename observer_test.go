@@ -208,7 +208,7 @@ func TestWithRaceObserver(t *testing.T) {
 func TestRaceObserver_BudgetCutoffIsUnfinished(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	rec := newRaceRecord()
+	rec := newRaceRecord(context.Background())
 	rec.racing([]Transport{&mockTransport{name: "cutoff"}, &mockTransport{name: "blocked"}})
 	rec.connectFailed(ctx, 0, fmt.Errorf("dial: %w", ctx.Err()), time.Now())
 	rec.connectFailed(ctx, 1, errors.New("connection refused"), time.Now())
@@ -220,4 +220,91 @@ func TestRaceObserver_BudgetCutoffIsUnfinished(t *testing.T) {
 func TestWithTransport_RejectsEmptyName(t *testing.T) {
 	_, err := NewKindling("test", WithTransport(&mockTransport{name: ""}))
 	assert.Error(t, err)
+}
+
+// observeWithContext runs one request with ctx and returns what the observer saw.
+func observeWithContext(t *testing.T, ctx context.Context, method string, transports ...Transport) (Race, error) {
+	t.Helper()
+	var got []Race
+	rt := newRaceTransport("test", testLog, func(string) {}, transports)
+	rt.observer = func(_ context.Context, r Race) { got = append(got, r) }
+	req, err := http.NewRequestWithContext(ctx, method, "https://origin.example/v1/config", nil)
+	require.NoError(t, err)
+	resp, err := rt.RoundTrip(req)
+	if resp != nil {
+		resp.Body.Close()
+	}
+	require.Len(t, got, 1, "observer runs once per request")
+	return got[0], err
+}
+
+// hangsUntilCanceled connects only once ctx ends, and then fails with its error.
+func hangsUntilCanceled(ctx context.Context, _ string) (http.RoundTripper, error) {
+	<-ctx.Done()
+	return nil, fmt.Errorf("dial: %w", ctx.Err())
+}
+
+// A caller that gives up while every transport is still connecting says
+// nothing about the transports, so the race is canceled, not failed.
+func TestRaceObserver_CallerCancelWhileConnecting(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+	race, err := observeWithContext(t, ctx, http.MethodGet,
+		&mockTransport{name: "smart", newRoundTripper: hangsUntilCanceled},
+		&mockTransport{name: "soar", startDelay: time.Hour, newRoundTripper: hangsUntilCanceled},
+	)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.True(t, race.Canceled)
+	assert.Empty(t, race.Winner)
+	a := byTransport(race)
+	assert.Equal(t, OutcomeCanceled, a["smart"].Outcome)
+	assert.NotContains(t, a, "soar", "a transport that never joined stays out")
+}
+
+// A POST is sent once, so the request the caller cancels is the race's
+// final answer. It failed because of the caller, not the transport.
+func TestRaceObserver_CallerCancelDuringRequest(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	sending := make(chan struct{})
+	go func() {
+		<-sending
+		cancel()
+	}()
+	race, err := observeWithContext(t, ctx, http.MethodPost,
+		&mockTransport{name: "smart", newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+			return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				close(sending)
+				<-req.Context().Done()
+				return nil, req.Context().Err()
+			}), nil
+		}},
+	)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.True(t, race.Canceled)
+	assert.Equal(t, OutcomeCanceled, byTransport(race)["smart"].Outcome)
+}
+
+// The caller's own deadline ends the request just as cancelling does.
+func TestRaceObserver_CallerDeadlineIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	race, err := observeWithContext(t, ctx, http.MethodGet,
+		&mockTransport{name: "smart", newRoundTripper: hangsUntilCanceled},
+	)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.True(t, race.Canceled)
+	assert.Equal(t, OutcomeCanceled, byTransport(race)["smart"].Outcome)
+}
+
+// A request that failed on its own isn't canceled, even if the caller's
+// context ends before the race reports.
+func TestRaceObserver_FailureBeforeCancelIsAFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rec := newRaceRecord(ctx)
+	rec.racing([]Transport{&mockTransport{name: "smart"}})
+	rec.requestFailed(0, 0, errors.New("connection reset"))
+	race := rec.finish()
+	assert.False(t, race.Canceled)
+	assert.Equal(t, OutcomeRequestFailed, byTransport(race)["smart"].Outcome)
 }

@@ -107,7 +107,7 @@ type connectResult struct {
 func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var rec *raceRecord
 	if t.observer != nil {
-		rec = newRaceRecord()
+		rec = newRaceRecord(req.Context())
 		defer func() { t.observer(req.Context(), rec.finish()) }()
 	}
 	bodyBytes, err := drainRequestBody(req)
@@ -499,7 +499,7 @@ func (t *raceTransport) settle(s sent, method string, idempotent bool, heldResp 
 		// POST, so without this the one path under investigation was
 		// the one path still returning an unattributed error.
 		if err != nil {
-			rec.add(result.id, OutcomeRequestFailed, statusOf(resp), err)
+			rec.requestFailed(result.id, statusOf(resp), err)
 			err = fmt.Errorf("transport %s: %w", result.name, err)
 		} else {
 			rec.add(result.id, OutcomeWon, resp.StatusCode, nil)
@@ -517,7 +517,7 @@ func (t *raceTransport) settle(s sent, method string, idempotent bool, heldResp 
 		// err is non-nil (the spec only requires resp == nil when
 		// err == nil for the success direction). Drain + close
 		// defensively so we don't leak the body / connection.
-		rec.add(result.id, OutcomeRequestFailed, statusOf(resp), err)
+		rec.requestFailed(result.id, statusOf(resp), err)
 		cancels[result.id]()
 		drainAndClose(resp)
 		*heldErr = errors.Join(*heldErr, fmt.Errorf("transport %s: %w", result.name, err))
