@@ -210,8 +210,8 @@ func TestRaceObserver_BudgetCutoffIsUnfinished(t *testing.T) {
 	cancel()
 	rec := newRaceRecord()
 	rec.racing([]Transport{&mockTransport{name: "cutoff"}, &mockTransport{name: "blocked"}})
-	rec.connectFailed(ctx, 0, fmt.Errorf("dial: %w", ctx.Err()), time.Now())
-	rec.connectFailed(ctx, 1, errors.New("connection refused"), time.Now())
+	rec.connectFailed(0, fmt.Errorf("dial: %w", ctx.Err()), time.Now(), endedBy(ctx, fmt.Errorf("dial: %w", ctx.Err())))
+	rec.connectFailed(1, errors.New("connection refused"), time.Now(), endedBy(ctx, errors.New("connection refused")))
 	a := byTransport(rec.finish())
 	assert.Equal(t, OutcomeUnfinished, a["cutoff"].Outcome)
 	assert.Equal(t, OutcomeConnectFailed, a["blocked"].Outcome)
@@ -391,7 +391,7 @@ func TestRaceObserver_ConnectFailureWithCause(t *testing.T) {
 	<-budget.Done()
 	rec := newRaceRecord()
 	rec.racing([]Transport{&mockTransport{name: "smart"}})
-	rec.connectFailed(budget, 0, fmt.Errorf("dial: %w", context.Cause(budget)), time.Now())
+	rec.connectFailed(0, fmt.Errorf("dial: %w", context.Cause(budget)), time.Now(), endedBy(budget, fmt.Errorf("dial: %w", context.Cause(budget))))
 	rec.raceEnded(budget)
 	assert.Equal(t, OutcomeUnfinished, byTransport(rec.finish())["smart"].Outcome)
 
@@ -402,7 +402,7 @@ func TestRaceObserver_ConnectFailureWithCause(t *testing.T) {
 	cancel(superseded)
 	rec = newRaceRecord()
 	rec.racing([]Transport{&mockTransport{name: "smart"}})
-	rec.connectFailed(budget, 0, fmt.Errorf("dial: %w", superseded), time.Now())
+	rec.connectFailed(0, fmt.Errorf("dial: %w", superseded), time.Now(), endedBy(budget, fmt.Errorf("dial: %w", superseded)))
 	rec.raceEnded(budget)
 	race := rec.finish()
 	assert.True(t, race.Canceled)
@@ -426,4 +426,28 @@ func TestBudgetSpent(t *testing.T) {
 	cancel()
 	assert.False(t, budgetSpent(budget), "the caller ended it first")
 	assert.False(t, budgetSpent(context.Background()))
+}
+
+// Whether a connection failure was the context ending is judged when the
+// attempt returns. A transport's own timeout, returned while the request was
+// live, stays a failure even if the caller gives up before the race reads it.
+func TestRaceObserver_ConnectFailureJudgedOnReturn(t *testing.T) {
+	caller, cancel := context.WithCancel(context.Background())
+	err := fmt.Errorf("dial: %w", context.DeadlineExceeded)
+	cutOff := endedBy(caller, err) // when the attempt returned
+	cancel()
+
+	rec := newRaceRecord()
+	rec.racing([]Transport{&mockTransport{name: "smart"}})
+	rec.connectFailed(0, err, time.Now(), cutOff)
+	rec.raceEnded(caller)
+	race := rec.finish()
+	assert.False(t, race.Canceled)
+	assert.Equal(t, OutcomeConnectFailed, byTransport(race)["smart"].Outcome)
+}
+
+// A transport may fail with the budget's cause instead of its error, and that
+// must still read as a timeout.
+func TestErrBudgetSpentIsATimeout(t *testing.T) {
+	assert.ErrorIs(t, errBudgetSpent, context.DeadlineExceeded)
 }

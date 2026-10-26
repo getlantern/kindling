@@ -3,6 +3,7 @@ package kindling
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 )
@@ -84,7 +85,9 @@ func newRaceRecord() *raceRecord {
 
 // errBudgetSpent is the cause of a request's context ending when kindling's
 // time budget for it runs out, as opposed to the caller ending it.
-var errBudgetSpent = errors.New("kindling: request time budget spent")
+// It wraps context.DeadlineExceeded, so an error a transport returns with it
+// still reads as a timeout.
+var errBudgetSpent = fmt.Errorf("kindling: request time budget spent: %w", context.DeadlineExceeded)
 
 // raceEnded notes whether the caller had ended the request when the race
 // ended. ctx is the race's context, whose cause is errBudgetSpent if the
@@ -133,10 +136,11 @@ func (r *raceRecord) addAt(id int, o Outcome, status int, err error, at time.Tim
 	})
 }
 
-// connectFailed records a connection failure, unless the request's own budget
-// ending caused it: that attempt was cut off, so it stays unfinished.
-func (r *raceRecord) connectFailed(ctx context.Context, id int, err error, at time.Time) {
-	if endedBy(ctx, err) {
+// connectFailed records a connection failure, unless the race's context
+// ending caused it (cutOff). That attempt was cut off rather than failed, and
+// finish records it as unfinished or canceled.
+func (r *raceRecord) connectFailed(id int, err error, at time.Time, cutOff bool) {
+	if cutOff {
 		return
 	}
 	r.addAt(id, OutcomeConnectFailed, 0, err, at)

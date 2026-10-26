@@ -102,6 +102,9 @@ type connectResult struct {
 	id   int       // race position, for the observer
 	at   time.Time // when the outcome happened
 	err  error
+	// cutOff is whether err was the race's context ending, judged when the
+	// connection attempt returned rather than when the race gets to it.
+	cutOff bool
 }
 
 func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -265,7 +268,7 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 			case r := <-results:
 				running--
 				if r.err != nil {
-					rec.connectFailed(ctx, r.id, r.err, r.at)
+					rec.connectFailed(r.id, r.err, r.at, r.cutOff)
 				}
 				discard(r.rt)
 			default:
@@ -359,7 +362,7 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 				running--
 				if r.err != nil {
 					heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", r.name, r.err))
-					rec.connectFailed(ctx, r.id, r.err, r.at)
+					rec.connectFailed(r.id, r.err, r.at, r.cutOff)
 				}
 				discard(r.rt)
 			case s := <-sends:
@@ -440,7 +443,7 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 				// was unattributable unless its own text happened to say which
 				// strategy produced it.
 				heldErr = errors.Join(heldErr, fmt.Errorf("transport %s: %w", result.name, result.err))
-				rec.connectFailed(ctx, result.id, result.err, result.at)
+				rec.connectFailed(result.id, result.err, result.at, result.cutOff)
 			} else if inFlight == 0 || (idempotent && hedging) {
 				send(result)
 			} else {
@@ -655,12 +658,12 @@ func (t *raceTransport) connect(ctx context.Context, tr Transport, id int, addr 
 
 	rt, err := tr.NewRoundTripper(ctx, addr)
 	if err != nil {
-		results <- connectResult{name: tr.Name(), id: id, at: time.Now(), err: err}
+		results <- connectResult{name: tr.Name(), id: id, at: time.Now(), err: err, cutOff: endedBy(ctx, err)}
 		return
 	}
 	if ctx.Err() != nil {
 		discard(rt)
-		results <- connectResult{name: tr.Name(), id: id, at: time.Now(), err: ctx.Err()}
+		results <- connectResult{name: tr.Name(), id: id, at: time.Now(), err: ctx.Err(), cutOff: true}
 		return
 	}
 	results <- connectResult{rt: rt, name: tr.Name(), id: id, at: time.Now()}
