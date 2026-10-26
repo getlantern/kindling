@@ -208,7 +208,7 @@ func TestWithRaceObserver(t *testing.T) {
 func TestRaceObserver_BudgetCutoffIsUnfinished(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	rec := newRaceRecord(context.Background())
+	rec := newRaceRecord()
 	rec.racing([]Transport{&mockTransport{name: "cutoff"}, &mockTransport{name: "blocked"}})
 	rec.connectFailed(ctx, 0, fmt.Errorf("dial: %w", ctx.Err()), time.Now())
 	rec.connectFailed(ctx, 1, errors.New("connection refused"), time.Now())
@@ -301,7 +301,8 @@ func TestRaceObserver_CallerDeadlineIsCanceled(t *testing.T) {
 func TestRaceObserver_FailureBeforeCancelIsAFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	rec := newRaceRecord(ctx)
+	rec := newRaceRecord()
+	rec.raceEnded(ctx)
 	rec.racing([]Transport{&mockTransport{name: "smart"}})
 	rec.requestFailed(0, 0, errors.New("connection reset"), false)
 	race := rec.finish()
@@ -351,4 +352,32 @@ func TestEndedBy(t *testing.T) {
 	withCause, cancelCause := context.WithCancelCause(live)
 	cancelCause(stop)
 	assert.True(t, endedBy(withCause, fmt.Errorf("send: %w", stop)))
+}
+
+// The budget ending the race decides the outcome, even if the caller gives up
+// before the race is reported.
+func TestRaceObserver_BudgetEndBeatsLaterCancel(t *testing.T) {
+	caller, cancel := context.WithCancel(context.Background())
+	budget, stop := context.WithTimeoutCause(caller, time.Nanosecond, errBudgetSpent)
+	defer stop()
+	<-budget.Done()
+	cancel()
+
+	rec := newRaceRecord()
+	rec.racing([]Transport{&mockTransport{name: "smart"}})
+	rec.raceEnded(budget)
+	race := rec.finish()
+	assert.False(t, race.Canceled)
+	assert.Equal(t, OutcomeUnfinished, byTransport(race)["smart"].Outcome)
+
+	caller, cancel = context.WithCancel(context.Background())
+	budget, stop = context.WithTimeoutCause(caller, time.Hour, errBudgetSpent)
+	defer stop()
+	cancel()
+	rec = newRaceRecord()
+	rec.racing([]Transport{&mockTransport{name: "smart"}})
+	rec.raceEnded(budget)
+	race = rec.finish()
+	assert.True(t, race.Canceled, "the caller ended it first")
+	assert.Equal(t, OutcomeCanceled, byTransport(race)["smart"].Outcome)
 }

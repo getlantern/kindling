@@ -68,17 +68,32 @@ func WithRaceObserver(fn func(ctx context.Context, race Race)) Option {
 // RoundTrip touches it. A nil record, used when nobody observes, records nothing.
 // Attempts are keyed by race position, since transport names needn't be unique.
 type raceRecord struct {
-	// caller is the request's own context, without kindling's time budget.
-	caller   context.Context
-	start    time.Time
-	race     Race
-	names    []string // by race position
-	reported []bool   // by race position
-	ids      []int    // race position of each entry in race.Attempts
+	// callerEnded is whether the caller had ended the request when the race
+	// ended (see raceEnded).
+	callerEnded bool
+	start       time.Time
+	race        Race
+	names       []string // by race position
+	reported    []bool   // by race position
+	ids         []int    // race position of each entry in race.Attempts
 }
 
-func newRaceRecord(caller context.Context) *raceRecord {
-	return &raceRecord{caller: caller, start: time.Now()}
+func newRaceRecord() *raceRecord {
+	return &raceRecord{start: time.Now()}
+}
+
+// errBudgetSpent is the cause of a request's context ending when kindling's
+// time budget for it runs out, as opposed to the caller ending it.
+var errBudgetSpent = errors.New("kindling: request time budget spent")
+
+// raceEnded notes whether the caller had ended the request when the race
+// ended. ctx is the race's context, whose cause is errBudgetSpent if the
+// budget ended it first, so a caller giving up later doesn't count.
+func (r *raceRecord) raceEnded(ctx context.Context) {
+	if r == nil || ctx.Err() == nil {
+		return
+	}
+	r.callerEnded = !errors.Is(context.Cause(ctx), errBudgetSpent)
 }
 
 // racing registers transports joining the race and returns the race position
@@ -160,7 +175,7 @@ func (r *raceRecord) won(id int) {
 // off by it and are canceled rather than unfinished.
 func (r *raceRecord) finish() Race {
 	pending := OutcomeUnfinished
-	if r.race.Winner == "" && r.caller.Err() != nil {
+	if r.race.Winner == "" && r.callerEnded {
 		pending = OutcomeCanceled
 	}
 	for id, done := range r.reported {

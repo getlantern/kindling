@@ -107,7 +107,7 @@ type connectResult struct {
 func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var rec *raceRecord
 	if t.observer != nil {
-		rec = newRaceRecord(req.Context())
+		rec = newRaceRecord()
 		defer func() { t.observer(req.Context(), rec.finish()) }()
 	}
 	bodyBytes, err := drainRequestBody(req)
@@ -120,11 +120,12 @@ func (t *raceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, errors.New("no eligible transports for request")
 	}
 
-	ctx, cancel := context.WithTimeout(req.Context(), t.requestTimeout(req, eligible))
+	ctx, cancel := context.WithTimeoutCause(req.Context(), t.requestTimeout(req, eligible), errBudgetSpent)
 	defer cancel()
 
 	idempotent := isRetryableMethod(req.Method) || req.Header.Get(IdempotentHeader) != ""
 	res := t.race(ctx, req, eligible, bodyBytes, idempotent, rec)
+	rec.raceEnded(ctx)
 	if res.final {
 		if res.resp != nil && res.err == nil {
 			rec.won(res.id)
