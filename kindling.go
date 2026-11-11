@@ -330,7 +330,9 @@ type DNSTunnel interface {
 // [DefaultDNSTunnelStartDelay] into a request, or as soon as every faster
 // transport has failed if that comes first. A DNSTunnel can set its own delay
 // with a StartDelay() time.Duration method, and [WithStartDelay] overrides
-// both.
+// both. A DNSTunnel with an IsStreamable() bool method that returns false is
+// left out of streaming requests (Accept: text/event-stream), which hold a
+// tunnel stream open for as long as the response lasts.
 func WithDNSTunnel(d DNSTunnel) Option {
 	return func(k *kindling) error {
 		if d == nil {
@@ -351,6 +353,9 @@ func WithDNSTunnel(d DNSTunnel) Option {
 		}
 		if tt, ok := d.(interface{ MaxLength() int }); ok {
 			nt.maxLength = tt.MaxLength()
+		}
+		if tt, ok := d.(interface{ IsStreamable() bool }); ok {
+			nt.isStreamable = tt.IsStreamable()
 		}
 		k.transports = append(k.transports, nt)
 		return nil
