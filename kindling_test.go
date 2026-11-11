@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -259,6 +260,11 @@ func (s *stubDNSTT) Close() error { return nil }
 func (s *stubDNSTT) RequestTimeout() time.Duration { return s.reqTimeout }
 func (s *stubDNSTT) MaxLength() int                { return s.maxLength }
 
+// stubUnstreamableDNSTT is a DNS tunnel that can't carry streaming responses.
+type stubUnstreamableDNSTT struct{ stubDNSTT }
+
+func (s *stubUnstreamableDNSTT) IsStreamable() bool { return false }
+
 func TestWithDNSTunnelOverrides(t *testing.T) {
 	t.Parallel()
 
@@ -281,6 +287,27 @@ func TestWithDNSTunnelOverrides(t *testing.T) {
 		}
 		if tr.MaxLength() != 0 {
 			t.Errorf("MaxLength() = %d, want 0", tr.MaxLength())
+		}
+		if !tr.IsStreamable() {
+			t.Error("IsStreamable() = false, want true")
+		}
+	})
+
+	t.Run("NotStreamable", func(t *testing.T) {
+		t.Parallel()
+		ki, err := NewKindling("test", WithDNSTunnel(&stubUnstreamableDNSTT{}))
+		if err != nil {
+			t.Fatalf("NewKindling() error = %v", err)
+		}
+		tr := ki.(*kindling).transports[0]
+		if tr.IsStreamable() {
+			t.Error("IsStreamable() = true, want false")
+		}
+		if err := ki.ReplaceTransport(TransportDNSTunnel, tr.NewRoundTripper); err != nil {
+			t.Fatal(err)
+		}
+		if ki.(*kindling).transports[0].IsStreamable() {
+			t.Error("ReplaceTransport made the tunnel streamable")
 		}
 	})
 
@@ -726,3 +753,51 @@ func TestPreconnectedTransportCloseLeavesARequestAlone(t *testing.T) {
 		t.Fatalf("body after Close = %q, %v", body, err)
 	}
 }
+
+// A tunnel that can't stream stays out of streaming requests, which would hold
+// one of its streams for as long as the response lasts, and still serves the rest.
+func TestUnstreamableDNSTunnelSkipsStreamingRequests(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer server.Close()
+	var dialed atomic.Int32
+	tunnel := &dialingDNSTT{dial: func(ctx context.Context, addr string) (http.RoundTripper, error) {
+		dialed.Add(1)
+		return server.Client().Transport, nil
+	}}
+	ki, err := NewKindling("test", WithDNSTunnel(tunnel), WithStartDelay(TransportDNSTunnel, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := ki.NewHTTPClient()
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL, nil)
+	req.Header.Set("Accept", "text/event-stream")
+	if resp, err := client.Do(req); err == nil {
+		resp.Body.Close()
+		t.Error("a streaming request succeeded with only an unstreamable tunnel")
+	}
+	if n := dialed.Load(); n != 0 {
+		t.Errorf("the tunnel was dialed %d times for a streaming request", n)
+	}
+
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("an ordinary request: %v", err)
+	}
+	resp.Body.Close()
+	if dialed.Load() == 0 {
+		t.Error("the tunnel wasn't dialed for an ordinary request")
+	}
+}
+
+// dialingDNSTT is an unstreamable DNS tunnel whose round trippers come from dial.
+type dialingDNSTT struct {
+	dial func(ctx context.Context, addr string) (http.RoundTripper, error)
+}
+
+func (d *dialingDNSTT) NewRoundTripper(ctx context.Context, addr string) (http.RoundTripper, error) {
+	return d.dial(ctx, addr)
+}
+func (d *dialingDNSTT) Close() error       { return nil }
+func (d *dialingDNSTT) IsStreamable() bool { return false }
