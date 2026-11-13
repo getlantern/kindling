@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Page not found · Kindling</title>
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#e9e8e4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141216" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/fonts.css">
+<style>
+:root {
+  --ash: #e9e8e4; --ash-2: #dedcd6; --soot: #1d1b20; --char: #5d5852; --smoke: #c9c5be;
+  --ember: #a8360c; --heat: #b9520a;
+  --display: "Tilt Warp", "Arial Rounded MT Bold", "Trebuchet MS", sans-serif;
+  --body: "Petrona", Georgia, "Times New Roman", serif;
+  --mono: "Fragment Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --ash: #141216; --ash-2: #1c191e; --soot: #eee8e2; --char: #a59e96; --smoke: #3a3539; --ember: #ff6a33; --heat: #ffbe5c; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--ash); color: var(--soot); font: 400 18px/1.62 var(--body); padding: 24px 20px; }
+main { max-width: 640px; display: grid; gap: 18px; }
+.kicker { font: 400 .74rem/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--char); }
+h1 { margin: 0; font: 400 clamp(5rem, 22vw, 10rem)/.82 var(--display); letter-spacing: -.04em;
+  background: linear-gradient(180deg, var(--heat) 10%, var(--ember) 80%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+p { margin: 0; color: var(--char); }
+a { color: var(--ember); text-underline-offset: 3px; }
+a:hover { color: var(--soot); }
+.cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+.btn { font: 400 .78rem/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; text-decoration: none; padding: 14px 18px; border: 2px solid var(--soot); color: var(--soot); border-radius: 999px; }
+.btn.hot { background: var(--soot); color: var(--ash); }
+.btn:hover { border-color: var(--ember); color: var(--ember); }
+.btn.hot:hover { background: var(--ember); color: var(--ash); border-color: var(--ember); }
+</style>
+</head>
+<body>
+<main>
+  <span class="kicker">Kindling · page not found</span>
+  <h1>404</h1>
+  <p>Nothing caught here. The page you asked for doesn't exist on kindling.lantern.io.</p>
+  <div class="cta">
+    <a class="btn hot" href="/">Kindling home</a>
+    <a class="btn" href="https://lantern.io">Lantern</a>
+  </div>
+</main>
+</body>
+</html>
