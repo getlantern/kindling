@@ -7,8 +7,8 @@ no build command and `site` as the output directory. `_headers` sets the respons
 
 To preview locally, open `index.html` in a browser, or run `python3 -m http.server -d site`.
 
-`404.html` is the not-found page. Without it, Cloudflare Pages would answer every unknown path,
-including `/robots.txt` and `/sitemap.xml`, with `index.html` and a 200.
+`404.html` is the not-found page. Without it, Cloudflare Pages answers every path that has no
+file with `index.html` and a 200, so crawlers see a copy of the home page at every broken link.
 
 ## The FAQ and structured data
 
