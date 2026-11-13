@@ -3,16 +3,206 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta property="og:title" content="Kindling">
-<meta property="og:description" content="Get an app's first requests through censoring firewalls by racing several circumvention techniques.">
-<meta property="og:url" content="https://kindling.lantern.io/">
-<meta property="og:type" content="website">
+<title>Kindling: a Go library for getting through censoring firewalls</title>
+<meta name="description" content="Kindling, Lantern's open-source Go library, gets an app's first requests through censoring firewalls by racing domain fronting, proxyless dialing and a DNS tunnel.">
 <link rel="canonical" href="https://kindling.lantern.io/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Kindling">
+<meta property="og:url" content="https://kindling.lantern.io/">
+<meta property="og:title" content="Kindling: a Go library for getting through censoring firewalls">
+<meta property="og:description" content="Get an app's first requests through censoring firewalls by racing several circumvention techniques. From Lantern.">
+<meta property="og:image" content="https://kindling.lantern.io/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Kindling: get the first bytes through a censored network">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Kindling: a Go library for getting through censoring firewalls">
+<meta name="twitter:description" content="Get an app's first requests through censoring firewalls by racing several circumvention techniques. From Lantern.">
+<meta name="twitter:image" content="https://kindling.lantern.io/og.png">
+<meta name="theme-color" content="#e9e8e4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141216" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="favicon.ico" sizes="16x16 32x32 48x48">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<title>Kindling</title>
-<meta name="description" content="Kindling is a Go library that gets an app's first requests through censoring firewalls by racing domain fronting, proxyless dialing, AMP caching and the Soar DNS tunnel.">
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@graph": [
+  {
+   "@type": "Organization",
+   "@id": "https://lantern.io/#organization",
+   "name": "Lantern",
+   "legalName": "Brave New Software Project, Inc.",
+   "url": "https://lantern.io",
+   "sameAs": [
+    "https://github.com/getlantern"
+   ]
+  },
+  {
+   "@type": "WebSite",
+   "@id": "https://kindling.lantern.io/#website",
+   "url": "https://kindling.lantern.io/",
+   "name": "Kindling",
+   "publisher": {
+    "@id": "https://lantern.io/#organization"
+   },
+   "inLanguage": "en"
+  },
+  {
+   "@type": "WebPage",
+   "@id": "https://kindling.lantern.io/#webpage",
+   "url": "https://kindling.lantern.io/",
+   "name": "Kindling: a Go library for getting through censoring firewalls",
+   "isPartOf": {
+    "@id": "https://kindling.lantern.io/#website"
+   },
+   "about": {
+    "@id": "https://kindling.lantern.io/#software"
+   },
+   "publisher": {
+    "@id": "https://lantern.io/#organization"
+   },
+   "primaryImageOfPage": "https://kindling.lantern.io/og.png",
+   "inLanguage": "en"
+  },
+  {
+   "@type": "SoftwareSourceCode",
+   "@id": "https://kindling.lantern.io/#software",
+   "name": "Kindling",
+   "description": "Kindling is an open-source Go library from Lantern that sends and receives small amounts of data, like configuration files, through censoring firewalls. It races several circumvention techniques (domain fronting, proxyless dialing and Google's AMP cache, with the Soar DNS tunnel held back as a last resort) and sends the request over whichever connects first. Your code gets back an ordinary Go http.Client.",
+   "codeRepository": "https://github.com/getlantern/kindling",
+   "programmingLanguage": "Go",
+   "license": "https://www.apache.org/licenses/LICENSE-2.0",
+   "url": "https://kindling.lantern.io/",
+   "author": {
+    "@id": "https://lantern.io/#organization"
+   },
+   "keywords": "censorship circumvention, domain fronting, Outline SDK, AMP cache, DNS tunnel, Go library, bootstrapping"
+  },
+  {
+   "@type": "FAQPage",
+   "@id": "https://kindling.lantern.io/#faq",
+   "isPartOf": {
+    "@id": "https://kindling.lantern.io/#webpage"
+   },
+   "mainEntity": [
+    {
+     "@type": "Question",
+     "name": "What is Kindling?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Kindling is an open-source Go library from Lantern that sends and receives small amounts of data, like configuration files, through censoring firewalls. It races several circumvention techniques (domain fronting, proxyless dialing and Google's AMP cache, with the Soar DNS tunnel held back as a last resort) and sends the request over whichever connects first. Your code gets back an ordinary Go http.Client."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Is Kindling a VPN?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "No. Kindling doesn't carry your browsing. It gets a circumvention app's first requests, such as fetching its configuration or its list of servers, through a censored network, so the app can start its own tunnel. If you want a VPN, download Lantern."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Which circumvention techniques does Kindling use?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Four, plus any you add. Domain fronting reaches the real origin through a large CDN under another server name. Proxyless dialing uses the Outline SDK's smart dialer, which tries DNS over HTTPS, TCP stream splitting and TLS record fragmentation to get past DNS and SNI blocking. The AMP cache transport uses Lantern's amp library to go through Google's AMP cache. Soar, a DNS tunnel, is the last resort."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "How does Kindling choose which technique to use?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "It doesn't choose in advance. Every transport in the first tier without a start delay begins connecting at the same time, so the race measures what actually works on the network the app is on, and the first to connect carries the request. If every transport in the tier fails, the next tier joins at once, and a transport with a start delay joins when its delay passes. WithRaceObserver reports how each race went: which transport won, and what happened to each one tried."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "When does Kindling use the DNS tunnel?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Only as a last resort. DNS tunnelling keeps working under heavy censorship but is slow, so Soar joins the race 8 seconds into a request, or as soon as every faster transport has failed, whichever comes first. The delay is there because censored networks often drop packets instead of refusing connections, so the faster transports can hang rather than fail. WithStartDelay changes it."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Will Kindling send a POST request twice?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Not unless you say it's safe. A request that isn't safe to replay is sent once, on the first transport to connect, and its response is returned whatever it is. Failing to connect always moves on to the next transport, because no body was sent. GET and HEAD requests, and requests with the X-Kindling-Idempotent header, also move on after a transport error, a 5xx or a 403, so set that header only on a POST the server can safely receive twice. Other 4xx responses are returned as they are."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "How much data can Kindling send?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Kindling is built for small requests, such as config fetches and status checks, not bulk traffic. Each transport declares its own limits: the AMP cache takes request bodies up to 6,000 bytes and can't stream, so Kindling skips it for larger bodies and for streaming requests (those with Accept: text/event-stream)."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "How does Kindling relate to the Outline SDK?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Kindling's proxyless transport is the Outline SDK smart dialer, which connects straight to the destination and searches for a DNS and TLS strategy that gets through. Kindling races it alongside domain fronting, the AMP cache and DNS tunnelling, so the request has other routes on networks where no proxyless strategy works."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Why not just use domain fronting?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Each technique beats a different kind of blocking, and none works everywhere. A domain front fails if that CDN path is blocked or refuses the client's country. Proxyless dialing works best for widely used services whose addresses aren't blocked. The AMP cache only carries small requests. Kindling runs them together, so one blocked route doesn't fail the request."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "How do I use Kindling in a Go program?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Run go get github.com/getlantern/kindling, create a client with kindling.NewKindling and the transports you want (WithDomainFronting, WithProxyless, WithAMPCache, WithDNSTunnel), then call NewHTTPClient() and use the result like any http.Client. See the code examples."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Can I add my own circumvention technique?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Yes. Anything that can return a pre-connected http.RoundTripper can join the race: implement the Transport interface and pass it to WithTransport. Add Priority() int to race in a later tier, or StartDelay() time.Duration to join late. Pull requests for new techniques are welcome on GitHub."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Does Lantern use Kindling?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Yes. Lantern's client backend, radiance, uses Kindling to fetch its configuration. Kindling is meant for any circumvention tool written in Go that needs to fetch configuration reliably on startup."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Is Kindling open source?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Yes. Kindling is written in Go and released under the Apache License 2.0 at github.com/getlantern/kindling."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Who makes Kindling?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "The Lantern team, at Brave New Software Project, Inc., which makes the Lantern VPN and censorship-circumvention app."
+     }
+    }
+   ]
+  }
+ ]
+}
+</script>
 <link rel="stylesheet" href="fonts.css">
 <style>
 /* Layout: a fire-starting field manual. Cool ash paper, soot ink, one ember gradient that only
@@ -172,8 +362,21 @@ section { padding-block: 96px 10px; }
 .soar .btn { border-color: var(--band-fg); color: var(--band-fg); }
 .soar .btn:hover { border-color: var(--flame); color: var(--flame); }
 
+/* faq */
+.faq { border-top: 2px solid var(--soot); }
+.qa { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: 10px 48px; padding: 24px 0 26px; border-bottom: 1px solid var(--smoke); scroll-margin-top: 24px; }
+.qa h3 { font-size: 1.3rem; line-height: 1.15; }
+.qa p { font-size: .98rem; color: var(--char); }
+.qa:target h3 { color: var(--ember); }
+
 footer { margin-top: 96px; border-top: 2px solid var(--soot); padding-block: 40px 48px; }
 footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 18px; font: 400 .74rem/1.6 var(--mono); color: var(--char); }
+footer .more { flex-basis: 100%; display: grid; gap: 16px; padding-bottom: 32px; margin-bottom: 8px; border-bottom: 1px solid var(--smoke); }
+footer .more h2 { font: 400 1.35rem/1 var(--display); color: var(--soot); }
+footer .more ul { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 32px; }
+footer .more span { display: block; margin-top: 2px; }
+footer .more a { color: var(--soot); text-decoration: underline; text-decoration-color: var(--ember); }
+footer .more a:hover { color: var(--ember); }
 
 @keyframes rise { from { transform: translateY(12px); opacity: .001; } to { transform: none; opacity: 1; } }
 .hero > * { animation: rise .7s cubic-bezier(.2,.7,.2,1) both; }
@@ -188,7 +391,8 @@ footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; g
   .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .step:nth-child(3) { padding-left: 0; border-left: 0; }
   .step:nth-child(n+3) { border-top: 1px solid var(--smoke); }
-  .problem, .code, .soar, .hero .sub { grid-template-columns: minmax(0, 1fr); }
+  .problem, .code, .soar, .hero .sub, .qa { grid-template-columns: minmax(0, 1fr); }
+  footer .more ul { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 620px) {
   body { font-size: 17px; }
@@ -200,6 +404,7 @@ footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; g
   .step + .step { border-top: 1px solid var(--smoke); }
   .soar { padding: 24px; }
   .contrib { grid-template-columns: minmax(0, 1fr); }
+  footer .more ul { grid-template-columns: minmax(0, 1fr); }
 }
 </style>
 </head>
@@ -216,8 +421,10 @@ footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; g
       <a href="#fuel">Transports</a>
       <a href="#race">The race</a>
       <a href="#code">Code</a>
+      <a href="#faq">FAQ</a>
       <a href="https://soar.lantern.io">Soar</a>
       <a href="https://github.com/getlantern/kindling">GitHub</a>
+      <a href="https://lantern.io">Lantern</a>
     </nav>
   </header>
 
@@ -400,12 +607,93 @@ kindling.<b>WithTransport</b>(myTransport)</pre>
       <div><b>0.3–1.4 s</b><span>to connect across nine emulated networks</span></div>
     </div>
   </aside>
+
+  <section id="faq" aria-labelledby="faq-h">
+    <div class="head">
+      <span class="kicker"><b>●</b> FAQ</span>
+      <h2 id="faq-h">Questions people ask about Kindling</h2>
+    </div>
+    <div class="faq">
+      <!-- faq:start -->
+      <div class="qa" id="what-is-kindling">
+        <h3>What is Kindling?</h3>
+        <p>Kindling is an open-source Go library from <a href="https://lantern.io">Lantern</a> that sends and receives small amounts of data, like configuration files, through censoring firewalls. It races several circumvention techniques (domain fronting, proxyless dialing and Google's AMP cache, with the Soar DNS tunnel held back as a last resort) and sends the request over whichever connects first. Your code gets back an ordinary Go <code>http.Client</code>.</p>
+      </div>
+      <div class="qa" id="is-kindling-a-vpn">
+        <h3>Is Kindling a VPN?</h3>
+        <p>No. Kindling doesn't carry your browsing. It gets a circumvention app's first requests, such as fetching its configuration or its list of servers, through a censored network, so the app can start its own tunnel. If you want a VPN, <a href="https://lantern.io/download">download Lantern</a>.</p>
+      </div>
+      <div class="qa" id="which-circumvention-techniques-does-kindling-use">
+        <h3>Which circumvention techniques does Kindling use?</h3>
+        <p>Four, plus any you add. Domain fronting reaches the real origin through a large CDN under another server name. Proxyless dialing uses the Outline SDK's smart dialer, which tries DNS over HTTPS, TCP stream splitting and TLS record fragmentation to get past DNS and SNI blocking. The AMP cache transport uses Lantern's <a href="https://github.com/getlantern/amp">amp</a> library to go through Google's AMP cache. <a href="https://soar.lantern.io">Soar</a>, a DNS tunnel, is the last resort.</p>
+      </div>
+      <div class="qa" id="how-does-kindling-choose-which-technique-to-use">
+        <h3>How does Kindling choose which technique to use?</h3>
+        <p>It doesn't choose in advance. Every transport in the first tier without a start delay begins connecting at the same time, so the race measures what actually works on the network the app is on, and the first to connect carries the request. If every transport in the tier fails, the next tier joins at once, and a transport with a start delay joins when its delay passes. <code>WithRaceObserver</code> reports how each race went: which transport won, and what happened to each one tried.</p>
+      </div>
+      <div class="qa" id="when-does-kindling-use-the-dns-tunnel">
+        <h3>When does Kindling use the DNS tunnel?</h3>
+        <p>Only as a last resort. DNS tunnelling keeps working under heavy censorship but is slow, so Soar joins the race 8 seconds into a request, or as soon as every faster transport has failed, whichever comes first. The delay is there because censored networks often drop packets instead of refusing connections, so the faster transports can hang rather than fail. <code>WithStartDelay</code> changes it.</p>
+      </div>
+      <div class="qa" id="will-kindling-send-a-post-request-twice">
+        <h3>Will Kindling send a POST request twice?</h3>
+        <p>Not unless you say it's safe. A request that isn't safe to replay is sent once, on the first transport to connect, and its response is returned whatever it is. Failing to connect always moves on to the next transport, because no body was sent. GET and HEAD requests, and requests with the <code>X-Kindling-Idempotent</code> header, also move on after a transport error, a 5xx or a 403, so set that header only on a POST the server can safely receive twice. Other 4xx responses are returned as they are.</p>
+      </div>
+      <div class="qa" id="how-much-data-can-kindling-send">
+        <h3>How much data can Kindling send?</h3>
+        <p>Kindling is built for small requests, such as config fetches and status checks, not bulk traffic. Each transport declares its own limits: the AMP cache takes request bodies up to 6,000 bytes and can't stream, so Kindling skips it for larger bodies and for streaming requests (those with <code>Accept: text/event-stream</code>).</p>
+      </div>
+      <div class="qa" id="how-does-kindling-relate-to-the-outline-sdk">
+        <h3>How does Kindling relate to the Outline SDK?</h3>
+        <p>Kindling's proxyless transport is the <a href="https://github.com/Jigsaw-Code/outline-sdk/tree/main/x/smart">Outline SDK smart dialer</a>, which connects straight to the destination and searches for a DNS and TLS strategy that gets through. Kindling races it alongside domain fronting, the AMP cache and DNS tunnelling, so the request has other routes on networks where no proxyless strategy works.</p>
+      </div>
+      <div class="qa" id="why-not-just-use-domain-fronting">
+        <h3>Why not just use domain fronting?</h3>
+        <p>Each technique beats a different kind of blocking, and none works everywhere. A domain front fails if that CDN path is blocked or refuses the client's country. Proxyless dialing works best for widely used services whose addresses aren't blocked. The AMP cache only carries small requests. Kindling runs them together, so one blocked route doesn't fail the request.</p>
+      </div>
+      <div class="qa" id="how-do-i-use-kindling-in-a-go-program">
+        <h3>How do I use Kindling in a Go program?</h3>
+        <p>Run <code>go get github.com/getlantern/kindling</code>, create a client with <code>kindling.NewKindling</code> and the transports you want (<code>WithDomainFronting</code>, <code>WithProxyless</code>, <code>WithAMPCache</code>, <code>WithDNSTunnel</code>), then call <code>NewHTTPClient()</code> and use the result like any <code>http.Client</code>. See <a href="#code">the code examples</a>.</p>
+      </div>
+      <div class="qa" id="can-i-add-my-own-circumvention-technique">
+        <h3>Can I add my own circumvention technique?</h3>
+        <p>Yes. Anything that can return a pre-connected <code>http.RoundTripper</code> can join the race: implement the <code>Transport</code> interface and pass it to <code>WithTransport</code>. Add <code>Priority() int</code> to race in a later tier, or <code>StartDelay() time.Duration</code> to join late. Pull requests for new techniques are welcome on <a href="https://github.com/getlantern/kindling">GitHub</a>.</p>
+      </div>
+      <div class="qa" id="does-lantern-use-kindling">
+        <h3>Does Lantern use Kindling?</h3>
+        <p>Yes. Lantern's client backend, <a href="https://github.com/getlantern/radiance">radiance</a>, uses Kindling to fetch its configuration. Kindling is meant for any circumvention tool written in Go that needs to fetch configuration reliably on startup.</p>
+      </div>
+      <div class="qa" id="is-kindling-open-source">
+        <h3>Is Kindling open source?</h3>
+        <p>Yes. Kindling is written in Go and released under the Apache License 2.0 at <a href="https://github.com/getlantern/kindling">github.com/getlantern/kindling</a>.</p>
+      </div>
+      <div class="qa" id="who-makes-kindling">
+        <h3>Who makes Kindling?</h3>
+        <p>The <a href="https://lantern.io">Lantern</a> team, at Brave New Software Project, Inc., which makes the Lantern VPN and censorship-circumvention app.</p>
+      </div>
+      <!-- faq:end -->
+    </div>
+  </section>
 </div>
 
 <footer>
   <div class="wrap">
-    <span>Kindling · github.com/getlantern/kindling · Apache 2.0</span>
-    <span><a href="https://soar.lantern.io">Soar</a> · <a href="https://lantern.io">Lantern</a></span>
+    <nav class="more" aria-labelledby="more-h">
+      <h2 id="more-h">More from Lantern</h2>
+      <ul>
+        <li><a href="https://lantern.io">Lantern</a><span>Free VPN and censorship-circumvention app</span></li>
+        <li><a href="https://samizdat.lantern.io">Samizdat</a><span>Censorship-circumvention protocol shaped like real TLS</span></li>
+        <li><a href="https://soar.lantern.io">Soar</a><span>DNS tunnel for networks that censor everything but DNS</span></li>
+        <li><a href="https://twiddle.lantern.io">twiddle</a><span>A TLS ClientHello, byte by byte</span></li>
+        <li><a href="https://lamplighter.lantern.io">Lamplighter</a><span>Run a Lantern node</span></li>
+        <li><a href="https://corpus.lantern.io">Circumvention corpus</a><span>Structured index of censorship-circumvention research</span></li>
+        <li><a href="https://geedge.lantern.io">Geedge leak index</a><span>What the Geedge/MESA leak reveals about censor capabilities</span></li>
+        <li><a href="https://ietf.lantern.io">IETF corpus</a><span>LLM-callable corpus of IETF RFCs and drafts</span></li>
+        <li><a href="https://unbounded-wp.lantern.io">Lantern Action Mode for WordPress</a><span>Live demo</span></li>
+      </ul>
+    </nav>
+    <span>Kindling · <a href="https://github.com/getlantern/kindling">github.com/getlantern/kindling</a> · Apache 2.0</span>
+    <span><a href="https://lantern.io/download">Get Lantern</a> · <a href="https://soar.lantern.io">Soar</a></span>
     <span>A <a href="https://lantern.io">Lantern</a> project</span>
   </div>
 </footer>
