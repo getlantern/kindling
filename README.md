@@ -1,5 +1,5 @@
 # Kindling
-Website: **[kindling.lantern.io](https://kindling.lantern.io)**. Kindling is built by the [Lantern](https://lantern.io) team, and its DNS-tunnel transport is [Soar](https://soar.lantern.io).
+Website: **[kindling.lantern.io](https://kindling.lantern.io)** ([source](https://github.com/getlantern/kindling-site)). Kindling is built by the [Lantern](https://lantern.io) team, and its DNS-tunnel transport is [Soar](https://soar.lantern.io).
 
 Library using a series of redundant techniques to send and receive small amounts of data through censoring firewalls. This is ideal for accessing things like configuration files during the bootrapping phase as circumvention tools first start. Kindling is intended to be used by any circumvention tool written in Go that need to reliably fetch configuration data on startup. It is also designed to be easy for any developer to add a new technique that other tools may benefit from.
 
