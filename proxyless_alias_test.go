@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Jigsaw-Code/outline-sdk/transport"
+	"golang.getoutline.org/sdk/transport"
 )
 
 // recordingDialer connects every dial to srv and records the address asked for.

@@ -15,10 +15,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Jigsaw-Code/outline-sdk/transport"
-	"github.com/Jigsaw-Code/outline-sdk/x/smart"
 	"github.com/getlantern/amp"
 	"github.com/getlantern/domainfront"
+	"golang.getoutline.org/sdk/transport"
+	"golang.getoutline.org/sdk/x/configurl"
+	"golang.getoutline.org/sdk/x/smart"
 )
 
 // TransportName identifies a built-in transport. Custom transports added via
@@ -251,7 +252,10 @@ func WithStreamDialer(d transport.StreamDialer) Option {
 }
 
 // WithPacketDialer is the UDP counterpart to WithStreamDialer. The smart
-// strategy uses UDP for DNS probes that drive strategy selection.
+// strategy uses UDP for DNS probes that drive strategy selection. A custom
+// packet dialer turns off strategies that need their own packet listener,
+// such as an h3connect fallback, since that listener would open sockets
+// around the dialer; the finder's log says so when one is skipped.
 func WithPacketDialer(d transport.PacketDialer) Option {
 	return func(k *kindling) error {
 		if d == nil {
@@ -533,14 +537,35 @@ func newSmartDialer(
 	if stream == nil {
 		stream = &transport.TCPDialer{}
 	}
+	customPacket := packet != nil
 	if packet == nil {
 		packet = &transport.UDPDialer{}
 	}
-	finder := &smart.StrategyFinder{
-		TestTimeout:  5 * time.Second,
-		LogWriter:    logWriter,
-		StreamDialer: stream,
-		PacketDialer: packet,
+	// The base dialers are what every strategy and fallback in the config
+	// dials through. The stream base stays a *transport.TCPDialer by
+	// default, which a `system: {}` DNS entry requires.
+	registry := configurl.NewDefaultRegistry()
+	configurl.RegisterBase(registry, func(context.Context, configurl.Registry, *configurl.Config) (transport.StreamDialer, error) {
+		return stream, nil
+	})
+	configurl.RegisterBase(registry, func(context.Context, configurl.Registry, *configurl.Config) (transport.PacketDialer, error) {
+		return packet, nil
+	})
+	if customPacket {
+		// Listener-based strategies, such as an h3connect fallback, would
+		// otherwise open a socket through the default listener and go
+		// around the given packet dialer. Fail them instead.
+		configurl.RegisterBase(registry, func(context.Context, configurl.Registry, *configurl.Config) (transport.PacketListener, error) {
+			return nil, errors.New("packet listener strategies are unavailable with a custom packet dialer")
+		})
+	}
+	finder, err := smart.NewFinderConfig().
+		SetConfigURLRegistry(registry).
+		SetTestTimeout(5 * time.Second).
+		SetLogWriter(logWriter).
+		New()
+	if err != nil {
+		return nil, fmt.Errorf("creating smart dialer finder: %w", err)
 	}
 	return finder.NewDialer(ctx, domains, configBytes)
 }

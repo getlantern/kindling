@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Jigsaw-Code/outline-sdk/transport"
+	"golang.getoutline.org/sdk/transport"
 )
 
 // errStubDialed marks "the strategy search finished and its dialer was used",

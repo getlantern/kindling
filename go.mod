@@ -1,13 +1,19 @@
 module github.com/getlantern/kindling
 
-go 1.25.0
+go 1.26.0
+
+// x/v0.3.0 plus a one-line fix so x/httpconnect builds against quic-go >= v0.53
+// (quic.EarlyConnection became *quic.Conn); stock v0.3.0 caps quic-go below the
+// releases that fix its open advisories. Same replace as lantern-box. Drop once
+// an upstream x release includes OutlineFoundation/outline-sdk#657.
+replace golang.getoutline.org/sdk/x => github.com/getlantern/outline-sdk/x v0.3.0-lantern.1
 
 require (
-	github.com/Jigsaw-Code/outline-sdk v0.0.19
-	github.com/Jigsaw-Code/outline-sdk/x v0.0.2
 	github.com/getlantern/amp v0.0.0-20260606002220-a8629924577c
 	github.com/getlantern/domainfront v0.0.0-20261026202828-9727b2f2a34a
-	github.com/stretchr/testify v1.11.1
+	github.com/stretchr/testify v1.12.1
+	golang.getoutline.org/sdk v0.1.0
+	golang.getoutline.org/sdk/x v0.3.0
 )
 
 require (
@@ -26,7 +32,6 @@ require (
 	github.com/bodgit/sevenzip v1.6.1 // indirect
 	github.com/bodgit/windows v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/goccy/go-yaml v1.19.0 // indirect
@@ -37,7 +42,8 @@ require (
 	github.com/mikelolasagasti/xz v1.0.1 // indirect
 	github.com/minio/minlz v1.0.1 // indirect
 	github.com/nwaples/rardecode/v2 v2.2.0 // indirect
-	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/quic-go/qpack v0.6.0 // indirect
+	github.com/quic-go/quic-go v0.62.0 // indirect
 	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/shadowsocks/go-shadowsocks2 v0.1.5 // indirect
 	github.com/sorairolake/lzip-go v0.3.8 // indirect
@@ -47,9 +53,10 @@ require (
 	go.opentelemetry.io/otel v1.43.0 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
-	golang.org/x/crypto v0.49.0 // indirect
-	golang.org/x/net v0.52.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.35.0 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 )
