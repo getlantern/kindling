@@ -252,7 +252,10 @@ func WithStreamDialer(d transport.StreamDialer) Option {
 }
 
 // WithPacketDialer is the UDP counterpart to WithStreamDialer. The smart
-// strategy uses UDP for DNS probes that drive strategy selection.
+// strategy uses UDP for DNS probes that drive strategy selection. A custom
+// packet dialer turns off strategies that need their own packet listener,
+// such as an h3connect fallback, since that listener would open sockets
+// around the dialer; the finder's log says so when one is skipped.
 func WithPacketDialer(d transport.PacketDialer) Option {
 	return func(k *kindling) error {
 		if d == nil {
