@@ -15,10 +15,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Jigsaw-Code/outline-sdk/transport"
-	"github.com/Jigsaw-Code/outline-sdk/x/smart"
 	"github.com/getlantern/amp"
 	"github.com/getlantern/domainfront"
+	"golang.getoutline.org/sdk/transport"
+	"golang.getoutline.org/sdk/x/configurl"
+	"golang.getoutline.org/sdk/x/smart"
 )
 
 // TransportName identifies a built-in transport. Custom transports added via
@@ -536,11 +537,23 @@ func newSmartDialer(
 	if packet == nil {
 		packet = &transport.UDPDialer{}
 	}
-	finder := &smart.StrategyFinder{
-		TestTimeout:  5 * time.Second,
-		LogWriter:    logWriter,
-		StreamDialer: stream,
-		PacketDialer: packet,
+	// The base dialers are what every strategy and fallback in the config
+	// dials through. The stream base stays a *transport.TCPDialer by
+	// default, which a `system: {}` DNS entry requires.
+	registry := configurl.NewDefaultRegistry()
+	configurl.RegisterBase(registry, func(context.Context, configurl.Registry, *configurl.Config) (transport.StreamDialer, error) {
+		return stream, nil
+	})
+	configurl.RegisterBase(registry, func(context.Context, configurl.Registry, *configurl.Config) (transport.PacketDialer, error) {
+		return packet, nil
+	})
+	finder, err := smart.NewFinderConfig().
+		SetConfigURLRegistry(registry).
+		SetTestTimeout(5 * time.Second).
+		SetLogWriter(logWriter).
+		New()
+	if err != nil {
+		return nil, fmt.Errorf("creating smart dialer finder: %w", err)
 	}
 	return finder.NewDialer(ctx, domains, configBytes)
 }

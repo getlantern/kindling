@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Jigsaw-Code/outline-sdk/transport"
 	"github.com/getlantern/domainfront"
+	"golang.getoutline.org/sdk/transport"
 )
 
 func TestNewKindling(t *testing.T) {

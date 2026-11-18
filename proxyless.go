@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Jigsaw-Code/outline-sdk/transport"
+	"golang.getoutline.org/sdk/transport"
 )
 
 // smartSearchTimeout bounds one strategy search. The Outline finder applies
