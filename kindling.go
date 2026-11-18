@@ -534,6 +534,7 @@ func newSmartDialer(
 	if stream == nil {
 		stream = &transport.TCPDialer{}
 	}
+	customPacket := packet != nil
 	if packet == nil {
 		packet = &transport.UDPDialer{}
 	}
@@ -547,6 +548,14 @@ func newSmartDialer(
 	configurl.RegisterBase(registry, func(context.Context, configurl.Registry, *configurl.Config) (transport.PacketDialer, error) {
 		return packet, nil
 	})
+	if customPacket {
+		// Listener-based strategies, such as an h3connect fallback, would
+		// otherwise open a socket through the default listener and go
+		// around the given packet dialer. Fail them instead.
+		configurl.RegisterBase(registry, func(context.Context, configurl.Registry, *configurl.Config) (transport.PacketListener, error) {
+			return nil, errors.New("packet listener strategies are unavailable with a custom packet dialer")
+		})
+	}
 	finder, err := smart.NewFinderConfig().
 		SetConfigURLRegistry(registry).
 		SetTestTimeout(5 * time.Second).
