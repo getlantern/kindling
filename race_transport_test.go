@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/http/httptrace"
 	"os"
 	"strings"
 	"sync"
@@ -923,23 +922,19 @@ func TestRaceTransport_POSTNotReplayedOnceMaybeSent(t *testing.T) {
 		conn.Close()
 	}))
 	t.Cleanup(hangUp.Close)
+	reset := h2cServer(t, func(http.ResponseWriter, *http.Request) {
+		panic(http.ErrAbortHandler)
+	})
 
-	cancel := make(chan struct{})
 	tests := []struct {
-		name   string
-		first  http.RoundTripper
-		cancel chan struct{}
+		name  string
+		first http.RoundTripper
 	}{
-		{"written then failed", &urlRewritingTransport{target: hangUp.URL}, nil},
+		{"written then failed", &urlRewritingTransport{target: hangUp.URL}},
+		{"HTTP/2 written then reset", h2cTransport(reset.Listener.Addr().String())},
 		{"no httptrace", roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return nil, errors.New("boom")
-		}), nil},
-		// HTTP/2 can return on req.Cancel before it reports WroteHeaders.
-		{"cancelled through req.Cancel", roundTripFunc(func(r *http.Request) (*http.Response, error) {
-			httptrace.ContextClientTrace(r.Context()).GetConn(r.URL.Host)
-			close(cancel)
-			return nil, errors.New("net/http: request canceled")
-		}), cancel},
+		})},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -967,7 +962,6 @@ func TestRaceTransport_POSTNotReplayedOnceMaybeSent(t *testing.T) {
 
 			req, err := http.NewRequest(http.MethodPost, "http://example.com/users/signup", strings.NewReader(`{}`))
 			require.NoError(t, err)
-			req.Cancel = tt.cancel
 
 			_, err = rt.RoundTrip(req)
 			require.Error(t, err)
@@ -975,6 +969,120 @@ func TestRaceTransport_POSTNotReplayedOnceMaybeSent(t *testing.T) {
 			assert.Equal(t, int64(0), secondHits.Load())
 		})
 	}
+}
+
+// On HTTP/2, a round trip cancelled through req.Cancel can return after its
+// headers went out but before net/http reports writing them. http.Client's
+// Timeout cancels that way. The POST must not go out again.
+func TestRaceTransport_HTTP2CancelledPOSTNotReplayed(t *testing.T) {
+	t.Parallel()
+
+	got := make(chan struct{})
+	release := make(chan struct{})
+	first := h2cServer(t, func(http.ResponseWriter, *http.Request) {
+		close(got)
+		<-release
+	})
+	// Registered after h2cServer's Close, so it runs first.
+	t.Cleanup(func() { close(release) })
+
+	var secondHits atomic.Int64
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer second.Close()
+
+	tr := h2cTransport(first.Listener.Addr().String())
+	dial := tr.DialContext
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := dial(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		return &stallHeaders{Conn: conn, release: release}, nil
+	}
+	delayed, connected := delayedTransport("second", second.URL, 50*time.Millisecond)
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			&mockTransport{
+				name: "first",
+				newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+					return tr, nil
+				},
+			},
+			delayed,
+		},
+	)
+
+	req, err := http.NewRequest(http.MethodPost, "http://example.com/users/signup", nil)
+	require.NoError(t, err)
+	cancel := make(chan struct{})
+	req.Cancel = cancel
+	go func() {
+		<-got
+		close(cancel)
+	}()
+
+	_, err = rt.RoundTrip(req)
+	require.Error(t, err)
+	waitForConnected(t, connected)
+	assert.Equal(t, int64(0), secondHits.Load())
+}
+
+// h2cServer serves handler over unencrypted HTTP/2.
+func h2cServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewUnstartedServer(handler)
+	srv.Config.Protocols = new(http.Protocols)
+	srv.Config.Protocols.SetUnencryptedHTTP2(true)
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// h2cTransport speaks unencrypted HTTP/2 to addr, whatever the request's host.
+func h2cTransport(addr string) *http.Transport {
+	p := new(http.Protocols)
+	p.SetUnencryptedHTTP2(true)
+	return &http.Transport{
+		Protocols: p,
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		},
+	}
+}
+
+// stallHeaders sends each write, but holds one carrying an HTTP/2 HEADERS
+// frame until release is closed, so net/http can't yet report it written.
+type stallHeaders struct {
+	net.Conn
+	release <-chan struct{}
+}
+
+func (c *stallHeaders) Write(b []byte) (int, error) {
+	n, err := c.Conn.Write(b)
+	if err == nil && hasHeadersFrame(b) {
+		<-c.release
+	}
+	return n, err
+}
+
+// hasHeadersFrame reports whether b, whole HTTP/2 frames that may follow the
+// client preface, holds a HEADERS frame.
+func hasHeadersFrame(b []byte) bool {
+	b = bytes.TrimPrefix(b, []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"))
+	for len(b) >= 9 {
+		if b[3] == 0x1 {
+			return true
+		}
+		n := 9 + (int(b[0])<<16 | int(b[1])<<8 | int(b[2]))
+		if n > len(b) {
+			break
+		}
+		b = b[n:]
+	}
+	return false
 }
 
 // closingListener returns the address of a listener that closes every
