@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"sort"
+	"sync/atomic"
 	"time"
 )
 
@@ -46,7 +48,8 @@ const IdempotentHeader = "X-Kindling-Idempotent"
 //
 //   - For non-idempotent methods (POST/PUT/DELETE/PATCH/etc.), exactly one
 //     request is sent once any transport connects, and the response is
-//     returned regardless of status or transport error. Retrying would
+//     returned regardless of status or transport error, unless the error
+//     came before the request was sent (see below). Retrying would
 //     risk replaying server-side side effects (DB writes, registrations,
 //     billing events) — once the body has crossed the wire, the server
 //     may have processed it even if the response was lost in transit.
@@ -63,7 +66,10 @@ const IdempotentHeader = "X-Kindling-Idempotent"
 //
 // Connections that fail to establish always fall back to the next transport
 // regardless of method — no body has been transmitted on a connection that
-// never came up, so replay risk is zero.
+// never came up, so replay risk is zero. The same goes for a request whose
+// headers net/http never finished writing ([httptrace] saw GetConn but no
+// WroteHeaders), as when blocking cuts off the smart transport's TLS
+// handshake inside RoundTrip.
 //
 // Transports are grouped into priority tiers (see [transportPriority]) and
 // may carry a start delay (see [transportStartDelay]). Default-tier
@@ -186,6 +192,9 @@ type sent struct {
 	// canceled is whether err came from the caller ending the request,
 	// judged when the request returned rather than when the race gets to it.
 	canceled bool
+	// unsent is whether err is known to have come before the request's
+	// headers were fully written, so any method can go to another transport.
+	unsent bool
 }
 
 // race connects the eligible transports and applies the method-aware retry
@@ -282,7 +291,8 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 		t.log.Debug("Transport connected, sending request", "name", result.name, "method", req.Method)
 		sendCtx, cancel := context.WithCancel(req.Context())
 		cancels[result.id] = cancel
-		clone := cloneRequest(req.WithContext(sendCtx), t.appName, result.name, bodyBytes)
+		var w writeTrace
+		clone := cloneRequest(req.WithContext(httptrace.WithClientTrace(sendCtx, w.clientTrace())), t.appName, result.name, bodyBytes)
 		inFlight++
 		go func() {
 			defer func() {
@@ -293,7 +303,16 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 				}
 			}()
 			resp, err := result.rt.RoundTrip(clone)
-			sends <- sent{result: result, resp: resp, err: err, canceled: endedBy(req.Context(), err) && !budgetSpent(ctx)}
+			sends <- sent{
+				result:   result,
+				resp:     resp,
+				err:      err,
+				canceled: endedBy(req.Context(), err) && !budgetSpent(ctx),
+				// HTTP/2 can return on cancellation, through the context or
+				// req.Cancel (which http.Client's Timeout sets), while the
+				// headers are still being written.
+				unsent: err != nil && sendCtx.Err() == nil && !closed(req.Cancel) && w.unsent(),
+			}
 		}()
 	}
 	// finish cancels every request but keep's, and closes the responses of
@@ -496,7 +515,7 @@ func (t *raceTransport) race(ctx context.Context, req *http.Request, eligible []
 // and records the failure so the race goes on.
 func (t *raceTransport) settle(s sent, method string, idempotent bool, heldResp **http.Response, heldID *int, heldErr *error, cancels map[int]context.CancelFunc, rec *raceRecord) (raceResult, bool) {
 	result, resp, err := s.result, s.resp, s.err
-	if !idempotent {
+	if !idempotent && !s.unsent {
 		// Single-shot: return whatever happened. Retrying on a non-
 		// idempotent method risks replaying side effects.
 		//
@@ -515,9 +534,10 @@ func (t *raceTransport) settle(s sent, method string, idempotent bool, heldResp 
 	}
 
 	if err != nil {
-		t.log.Warn("HTTP request failed on idempotent method, falling back",
+		t.log.Warn("HTTP request failed, falling back",
 			"name", result.name,
 			"method", method,
+			"unsent", s.unsent,
 			"error", err,
 		)
 		// http.RoundTripper allows resp to be non-nil even when
@@ -773,6 +793,36 @@ func hostWithPort(host, scheme string) string {
 		return net.JoinHostPort(host, "443")
 	}
 	return net.JoinHostPort(host, "80")
+}
+
+// writeTrace follows one request through a round tripper's httptrace hooks.
+type writeTrace struct {
+	gotConn, wroteHeaders atomic.Bool
+}
+
+func (w *writeTrace) clientTrace() *httptrace.ClientTrace {
+	return &httptrace.ClientTrace{
+		GetConn:      func(string) { w.gotConn.Store(true) },
+		WroteHeaders: func() { w.wroteHeaders.Store(true) },
+	}
+}
+
+// unsent reports whether the round tripper asked net/http for a connection
+// but never finished writing the request's headers, so no server can have
+// acted on it. Round trippers that bypass net/http fire neither hook, so
+// their requests count as sent.
+func (w *writeTrace) unsent() bool {
+	return w.gotConn.Load() && !w.wroteHeaders.Load()
+}
+
+// closed reports whether ch is closed. A nil channel never is.
+func closed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
 }
 
 // cloneRequest creates a copy of the HTTP request with the body replaced by
