@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -861,6 +862,278 @@ func TestRaceTransport_ConnectFailure_DoesFallBack(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, int64(1), secondHits.Load(),
 		"connect failure on the first transport must fall back to the second — no body has been transmitted")
+}
+
+// The smart transport connects with TCP and does its TLS handshake inside
+// RoundTrip, so a handshake the network cuts off fails a POST that was never
+// sent. That POST must go to the next transport.
+func TestRaceTransport_UnsentPOSTFallsBack(t *testing.T) {
+	t.Parallel()
+
+	blocked := closingListener(t)
+	var secondHits atomic.Int64
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer second.Close()
+
+	started := make(chan struct{})
+	gated, _ := gatedTransport("second", second.URL, started)
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			&mockTransport{
+				name: "smart",
+				newRoundTripper: func(ctx context.Context, _ string) (http.RoundTripper, error) {
+					conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", blocked)
+					if err != nil {
+						return nil, err
+					}
+					return signalStart(preconnectedTransport(conn), started), nil
+				},
+			},
+			gated,
+		},
+	)
+
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/users/prepare", strings.NewReader(`{}`))
+	require.NoError(t, err)
+
+	resp, err := rt.RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, int64(1), secondHits.Load())
+}
+
+// A POST that may have reached the server stays single-shot: kindling can't
+// tell whether the server acted on it.
+func TestRaceTransport_POSTNotReplayedOnceMaybeSent(t *testing.T) {
+	t.Parallel()
+
+	// Reads the request, then drops the connection without answering.
+	hangUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		conn.Close()
+	}))
+	t.Cleanup(hangUp.Close)
+	reset := h2cServer(t, func(http.ResponseWriter, *http.Request) {
+		panic(http.ErrAbortHandler)
+	})
+	resetAddr := reset.Listener.Addr().String()
+
+	tests := []struct {
+		name  string
+		first http.RoundTripper
+	}{
+		{"written then failed", &urlRewritingTransport{target: hangUp.URL}},
+		{"HTTP/2 written then reset", h2cTransport(resetAddr, nil)},
+		{"HTTP/2 write failed after the headers went out", h2cTransport(resetAddr, func() error {
+			return errors.New("connection reset")
+		})},
+		{"no httptrace", roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("boom")
+		})},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var secondHits atomic.Int64
+			second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				secondHits.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer second.Close()
+
+			started := make(chan struct{})
+			gated, connected := gatedTransport("second", second.URL, started)
+			rt := newRaceTransport("test", testLog, func(string) {},
+				[]Transport{
+					&mockTransport{
+						name: "first",
+						newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+							return signalStart(tt.first, started), nil
+						},
+					},
+					gated,
+				},
+			)
+
+			req, err := http.NewRequest(http.MethodPost, "http://example.com/users/signup", strings.NewReader(`{}`))
+			require.NoError(t, err)
+
+			_, err = rt.RoundTrip(req)
+			require.Error(t, err)
+			waitForConnected(t, connected)
+			assert.Equal(t, int64(0), secondHits.Load())
+		})
+	}
+}
+
+// On HTTP/2, a round trip cancelled through req.Cancel can return after its
+// headers went out but before net/http reports writing them. http.Client's
+// Timeout cancels that way. The POST must not go out again.
+func TestRaceTransport_HTTP2CancelledPOSTNotReplayed(t *testing.T) {
+	t.Parallel()
+
+	got := make(chan struct{})
+	release := make(chan struct{})
+	first := h2cServer(t, func(http.ResponseWriter, *http.Request) {
+		close(got)
+		<-release
+	})
+	// Registered after h2cServer's Close, so it runs first.
+	t.Cleanup(func() { close(release) })
+
+	var secondHits atomic.Int64
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer second.Close()
+
+	// Holding the write keeps net/http from reporting the headers written.
+	tr := h2cTransport(first.Listener.Addr().String(), func() error {
+		<-release
+		return nil
+	})
+	gated, connected := gatedTransport("second", second.URL, got)
+	rt := newRaceTransport("test", testLog, func(string) {},
+		[]Transport{
+			&mockTransport{
+				name: "first",
+				newRoundTripper: func(context.Context, string) (http.RoundTripper, error) {
+					return tr, nil
+				},
+			},
+			gated,
+		},
+	)
+
+	req, err := http.NewRequest(http.MethodPost, "http://example.com/users/signup", nil)
+	require.NoError(t, err)
+	cancel := make(chan struct{})
+	req.Cancel = cancel
+	go func() {
+		<-got
+		close(cancel)
+	}()
+
+	_, err = rt.RoundTrip(req)
+	require.Error(t, err)
+	waitForConnected(t, connected)
+	assert.Equal(t, int64(0), secondHits.Load())
+}
+
+// gatedTransport is delayedTransport, connecting once gate is closed rather
+// than after a delay, so the race can't send to it before something else.
+func gatedTransport(name, testServerURL string, gate <-chan struct{}) (Transport, <-chan struct{}) {
+	connected := make(chan struct{})
+	return &mockTransport{
+		name: name,
+		newRoundTripper: func(ctx context.Context, _ string) (http.RoundTripper, error) {
+			defer close(connected)
+			select {
+			case <-gate:
+				return &urlRewritingTransport{target: testServerURL}, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	}, connected
+}
+
+// signalStart closes started when rt's first round trip begins.
+func signalStart(rt http.RoundTripper, started chan struct{}) http.RoundTripper {
+	var once sync.Once
+	return roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		once.Do(func() { close(started) })
+		return rt.RoundTrip(req)
+	})
+}
+
+// h2cServer serves handler over unencrypted HTTP/2.
+func h2cServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewUnstartedServer(handler)
+	srv.Config.Protocols = new(http.Protocols)
+	srv.Config.Protocols.SetUnencryptedHTTP2(true)
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// h2cTransport speaks unencrypted HTTP/2 to addr, whatever the request's
+// host. A non-nil onHeaders runs once a write carrying a HEADERS frame has
+// gone out, and that write returns its error.
+func h2cTransport(addr string, onHeaders func() error) *http.Transport {
+	p := new(http.Protocols)
+	p.SetUnencryptedHTTP2(true)
+	return &http.Transport{
+		Protocols: p,
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+			if err != nil || onHeaders == nil {
+				return conn, err
+			}
+			return &headersHook{Conn: conn, onHeaders: onHeaders}, nil
+		},
+	}
+}
+
+type headersHook struct {
+	net.Conn
+	onHeaders func() error
+}
+
+func (c *headersHook) Write(b []byte) (int, error) {
+	n, err := c.Conn.Write(b)
+	if err == nil && hasHeadersFrame(b) {
+		err = c.onHeaders()
+	}
+	return n, err
+}
+
+// hasHeadersFrame reports whether b, whole HTTP/2 frames that may follow the
+// client preface, holds a HEADERS frame.
+func hasHeadersFrame(b []byte) bool {
+	b = bytes.TrimPrefix(b, []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"))
+	for len(b) >= 9 {
+		if b[3] == 0x1 {
+			return true
+		}
+		n := 9 + (int(b[0])<<16 | int(b[1])<<8 | int(b[2]))
+		if n > len(b) {
+			break
+		}
+		b = b[n:]
+	}
+	return false
+}
+
+// closingListener returns the address of a listener that closes every
+// connection it accepts.
+func closingListener(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			conn.Close()
+		}
+	}()
+	return ln.Addr().String()
 }
 
 // A last-resort transport (higher Priority) must not even be dialed while a
